@@ -171,6 +171,8 @@ async def test_monitor_and_history_against_real_piholes(piholes, settings, tmp_p
     await h.run()
     assert store.get_meta("backfill:test-ph1")
     await piholes[0].queries(10)
+    for d in await piholes[0].network_devices():
+        assert {"hwaddr", "numQueries", "lastQuery", "ips"} <= set(d)
 
 
 async def test_dns_probe_reports_failures():

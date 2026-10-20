@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, dnsprobe
+from . import config, devices, dnsprobe
 from .alerts import AlertManager, NoNotifier, Notifier, Ntfy
 from .history import History
 from .monitor import Monitor, Probe
@@ -293,6 +293,36 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
                 })
         rows.sort(key=lambda r: r["time"] or 0, reverse=True)
         return {"queries": rows[:n], "errors": errors}
+
+    @app.get("/api/devices")
+    async def devices_view() -> dict[str, Any]:
+        t = th()
+        seen = await asyncio.gather(*(p.network_devices() for p in t.piholes), return_exceptions=True)
+        per_pihole, errors = {}, []
+        for p, res in zip(t.piholes, seen):
+            if isinstance(res, PiholeError):
+                errors.append(f"{p.name}: {res.message}")
+            elif isinstance(res, BaseException):
+                raise res
+            else:
+                per_pihole[p.id] = res
+        # Group assignments come from the main Pi-hole; sync mirrors them to the secondary.
+        try:
+            clients, groups = await asyncio.gather(t.main.clients(), t.main.groups())
+        except PiholeError as e:
+            clients, groups = [], []
+            errors.append(f"{t.main.name}: couldn't read groups ({e.message})")
+        group_names = {g["id"]: g["name"] for g in groups}
+        rows = devices.merge(per_pihole, t.clock())
+        for row in rows:
+            row["clients"] = devices.match_clients(row, clients, group_names)
+        return {
+            "now": int(t.clock()),
+            "piholes": [{"id": p.id, "name": p.name} for p in t.piholes],
+            "groups": sorted(group_names.values()),
+            "devices": rows,
+            "errors": errors,
+        }
 
     @app.get("/api/sync")
     async def sync_state() -> dict[str, Any]:

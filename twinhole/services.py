@@ -166,6 +166,9 @@ class Editor:
 
     async def _edit_one(self, p: Pihole, change: Change) -> None:
         group_ids = {g["name"]: g["id"] for g in await p.groups()}
+        wanted = (change.after or {}).get("groups") or []
+        if p is self.secondary and any(name not in group_ids for name in wanted):
+            group_ids = await self._copy_groups(wanted, group_ids)
         if change.action == "delete" and change.resource in ("hosts", "cnames"):
             change = await self._with_raw_entry(p, change)
         try:
@@ -177,6 +180,15 @@ class Editor:
                 await apply_change(p, Change(change.resource, "update", change.key, change.after, None), group_ids)
                 return
             raise
+
+    async def _copy_groups(self, names: list[str], have: dict[str, int]) -> dict[str, int]:
+        """Create groups the secondary doesn't have yet, copied from the main (e.g. made in Pi-hole's own UI)."""
+        main_groups = {g["name"]: g for g in await self.main.groups()}
+        for name in names:
+            if name not in have and name in main_groups:
+                g = main_groups[name]
+                await self.secondary.add_group(name, g.get("comment"), bool(g.get("enabled", True)))
+        return {g["name"]: g["id"] for g in await self.secondary.groups()}
 
     async def _with_raw_entry(self, p: Pihole, change: Change) -> Change:
         """Local DNS entries must be deleted by their exact stored text, which can differ in spacing."""

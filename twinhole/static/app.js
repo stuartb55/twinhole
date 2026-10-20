@@ -71,10 +71,11 @@ const state = {
   manage: null,
   queries: null,
   queryFilter: { text: "", status: "all", pihole: "" },
+  deviceFilter: { text: "", scope: "active", unnamed: false, oneOnly: false },
   target: "both",
 };
 
-const pages = { overview, history, queries, sync, manage, actions };
+const pages = { overview, history, queries, devices, sync, manage, actions };
 
 function piholes() { return state.status ? state.status.piholes : []; }
 function byId(id) { return piholes().find((p) => p.id === id); }
@@ -100,6 +101,7 @@ async function go() {
   state.page = page in pages ? page : "overview";
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.page === state.page));
   const el = $("#page");
+  el.onclick = el.onchange = null; // drop the previous page's handlers
   try {
     await fn(el);
   } catch (e) {
@@ -395,6 +397,138 @@ async function queries(el) {
     await edit({ resource: "domains", action: "add", key: [type, "exact", domain], comment: "Added from the twinhole query log" });
   };
   await load();
+}
+
+// ---------- devices ------------------------------------------------------------------
+
+function deviceGroups(d) {
+  const exact = d.clients.find((c) => c.exact);
+  if (exact) return `${esc(exact.groups.join(", ") || "none")}<div class="muted small mono">${esc(exact.client)}</div>`;
+  const subnet = d.clients.find((c) => !c.exact);
+  if (subnet) return `${esc(subnet.groups.join(", "))}<div class="muted small">via ${esc(subnet.client)}</div>`;
+  return `<span class="muted">Default</span>`;
+}
+
+function deviceEditor(d, groups, pis) {
+  const exact = d.clients.find((c) => c.exact);
+  const ids = exact ? [[exact.client, exact.client]] : [
+    ...(d.mac ? [[d.mac, `MAC ${d.mac} (recommended)`]] : []),
+    ...d.ips.filter((ip) => !ip.includes(":")).map((ip) => [ip, `IP ${ip}`]),
+    ...d.ips.filter((ip) => ip.includes(":") && !ip.startsWith("fe80")).slice(0, 3).map((ip) => [ip, `IP ${ip}`]),
+  ];
+  const selected = exact ? exact.groups : ["Default"];
+  const onlyDefault = groups.length <= 1;
+  return `<tr class="editor"><td colspan="${6 + pis.length}">
+    <form class="inline" data-device="${esc(d.id)}" data-existing="${exact ? esc(exact.client) : ""}">
+      <label>Identify by<select name="ident" ${exact ? "disabled" : ""}>${ids.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("")}</select></label>
+      <label class="grow">Comment<input type="text" name="comment" value="${esc(exact ? exact.comment : d.name || d.vendor || "")}"></label>
+      <label>Groups${groupChecks(groups, selected)}</label>
+      <button class="btn primary" type="submit">${exact ? "Save" : "Assign"}</button>
+      ${exact ? `<button class="btn danger" type="button" data-remove>Remove entry</button>` : ""}
+      <button class="btn" type="button" data-cancel>Cancel</button>
+    </form>
+    <p class="small muted" style="margin:8px 0 0">${onlyDefault
+      ? `You only have the Default group, which every device is already in. Create a group on <a href="#manage" data-gotab="groups">Manage → Groups</a> first, then assign devices to it.`
+      : `Saved to both Pi-holes. Pi-hole only recognises a device by MAC when it's on the same network segment; use an IP if it isn't.`}</p>
+  </td></tr>`;
+}
+
+async function devices(el) {
+  const f = state.deviceFilter;
+  el.innerHTML = `<section class="card"><p class="empty">Reading both Pi-holes' device lists…</p></section>`;
+  const data = await api("/api/devices");
+  const pis = data.piholes;
+  const piholeIps = new Set(pis.map((p) => p.id));
+  let editing = null;
+
+  const draw = () => {
+    const text = f.text.toLowerCase();
+    const rows = data.devices.filter((d) => {
+      if (f.scope === "active" && !d.active) return false;
+      if (f.unnamed && d.name) return false;
+      if (f.oneOnly && !d.only_uses) return false;
+      return !text || [d.name, d.vendor, d.mac, ...d.ips].some((v) => (v || "").toLowerCase().includes(text));
+    });
+    const active = data.devices.filter((d) => d.active);
+    const off = writesOff() ? "disabled title='Read-only mode'" : "";
+    const nameOf = (id) => pis.find((p) => p.id === id)?.name || id;
+    el.innerHTML = `
+      ${data.errors.map((e) => `<div class="banner warn">${esc(e)}</div>`).join("")}
+      <section class="card">
+        <div class="card-head"><h2>Devices</h2>
+          <span class="muted small">${active.length} active in the last 7 days · ${data.devices.length} ever seen · ${active.filter((d) => !d.name).length} active without a name · ${active.filter((d) => d.only_uses).length} using only one Pi-hole</span>
+          <div class="right">
+            <input type="search" id="dtext" placeholder="Name, vendor, MAC or IP" value="${esc(f.text)}">
+            ${seg("dscope", [["active", "Active (7 days)"], ["all", "All"]], f.scope)}
+            <label class="small"><input type="checkbox" id="dunnamed" ${f.unnamed ? "checked" : ""}> No name</label>
+            <label class="small"><input type="checkbox" id="doneonly" ${f.oneOnly ? "checked" : ""}> One Pi-hole only</label>
+          </div>
+        </div>
+        <p class="small muted" style="margin-top:-4px">Every device either Pi-hole has seen, matched up by MAC address. Devices are in the Default group unless you assign them to others.</p>
+        ${!rows.length ? `<p class="empty">No matching devices</p>` : `<div class="table-wrap"><table>
+          <thead><tr><th>Device</th><th>Vendor</th><th>Address</th><th>Last query</th>
+            ${pis.map((p) => `<th class="num">${chip(p.id)}</th>`).join("")}<th>Groups</th><th></th></tr></thead>
+          <tbody>${rows.map((d) => {
+            const isPihole = d.ips.some((ip) => piholeIps.has(ip));
+            const more = d.ips.length > 1 ? ` <span class="muted small" title="${esc(d.ips.slice(1).join("\n"))}">+${d.ips.length - 1}</span>` : "";
+            const row = `<tr>
+              <td>${d.name ? esc(d.name) : `<span class="muted">(no name)</span>`}
+                ${isPihole ? ` <span class="pill">Pi-hole itself</span>` : ""}
+                ${d.only_uses ? ` <span class="pill warn" title="Only ${esc(nameOf(d.only_uses))} has had queries from it in the last 7 days">only ${esc(nameOf(d.only_uses))}</span>` : ""}
+                <div class="muted small mono">${esc(d.mac || d.id)}</div></td>
+              <td class="small" style="max-width:140px">${esc(d.vendor || "")}</td>
+              <td class="mono small" style="max-width:170px"><span style="${(d.ips[0] || "").includes(":") ? "word-break:break-all" : "white-space:nowrap"}">${esc(d.ips[0] || "")}</span>${more}</td>
+              <td class="small">${d.last_query ? fmt.ago(d.last_query) : "never"}</td>
+              ${pis.map((p) => `<td class="num">${d.queries[p.id] ? fmt.num(d.queries[p.id].count) : `<span class="muted">–</span>`}</td>`).join("")}
+              <td class="small">${deviceGroups(d)}</td>
+              <td class="actions"><button class="btn small" data-edit="${esc(d.id)}" ${off}>Groups…</button></td>
+            </tr>`;
+            return row + (editing === d.id ? deviceEditor(d, data.groups, pis) : "");
+          }).join("")}</tbody></table></div>`}
+      </section>`;
+    $("#dtext").oninput = (e) => {
+      f.text = e.target.value;
+      const pos = e.target.selectionStart;
+      draw();
+      $("#dtext").focus();
+      $("#dtext").setSelectionRange(pos, pos);
+    };
+    $("#dunnamed").onchange = (e) => { f.unnamed = e.target.checked; draw(); };
+    $("#doneonly").onchange = (e) => { f.oneOnly = e.target.checked; draw(); };
+    const form = $("form[data-device]");
+    if (form) form.onsubmit = save;
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const existing = form.dataset.existing;
+    const groups = $$("input[name=groups]:checked", form).map((x) => x.value);
+    const body = {
+      resource: "clients",
+      action: existing ? "update" : "add",
+      key: [existing || form.elements.ident.value],
+      comment: form.elements.comment.value.trim(),
+      groups: groups.length ? groups : ["Default"],
+    };
+    await edit(body);
+    go(); // reload either way: the main Pi-hole may have changed even if the secondary refused
+  };
+
+  el.onclick = async (e) => {
+    const s = e.target.closest('[data-seg="dscope"] button');
+    if (s) { f.scope = s.dataset.v; return draw(); }
+    const b = e.target.closest("[data-edit]");
+    if (b) { editing = editing === b.dataset.edit ? null : b.dataset.edit; return draw(); }
+    if (e.target.closest("[data-cancel]")) { editing = null; return draw(); }
+    if (e.target.closest("[data-gotab]")) { state.manageTab = "groups"; return; }
+    if (e.target.closest("[data-remove]")) {
+      const form = e.target.closest("form");
+      if (!confirm(`Remove the client entry ${form.dataset.existing}? The device goes back to the Default group.`)) return;
+      if (await edit({ resource: "clients", action: "delete", key: [form.dataset.existing] })) go();
+    }
+  };
+  draw();
 }
 
 // ---------- sync -------------------------------------------------------------------

@@ -156,3 +156,12 @@ def test_query_log_reports_an_unreachable_pihole(make_client, main_fake):
     main_fake.down = True
     body = make_client().get("/api/queries").json()
     assert body["errors"] and body["errors"][0].startswith("Main")
+
+
+def test_edit_creates_a_group_the_secondary_is_missing(make_client, main_fake, sec_fake):
+    main_fake.add_group("kids", comment="Children", enabled=True)  # made in .118's own UI, not synced yet
+    c = make_client(allow_writes=True)
+    r = c.post("/api/manage", json={"resource": "clients", "action": "add", "key": ["aa:bb:cc:dd:ee:ff"], "groups": ["kids"]})
+    assert [x["ok"] for x in r.json()["results"]] == [True, True]
+    assert sec_fake.groups["kids"]["comment"] == "Children"
+    assert sec_fake.clients["aa:bb:cc:dd:ee:ff"]["groups"] == [sec_fake.groups["kids"]["id"]]

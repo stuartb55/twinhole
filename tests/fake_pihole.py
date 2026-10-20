@@ -40,6 +40,7 @@ class FakePihole:
         self.history: list[dict[str, int]] = []
         self.history_db: list[dict[str, int]] = []
         self.query_log: list[dict[str, Any]] = []
+        self.devices: list[dict[str, Any]] = []  # the network table
         self.top: dict[str, list[dict[str, Any]]] = {"domains": [], "blocked": [], "clients": []}
         self.calls: list[tuple[str, str]] = []
         self.restarts = 0  # FTL restarts caused by local DNS / CNAME changes
@@ -110,6 +111,8 @@ class FakePihole:
         if head == "info" and parts[1] == "version":
             v = {"local": {"version": "v6.5"}, "remote": {"version": "v6.5"}}
             return httpx.Response(200, json={"version": {"core": v, "web": v, "ftl": v}})
+        if head == "network" and parts[1] == "devices":
+            return httpx.Response(200, json={"devices": self.devices})
         if head == "network" and parts[1] == "interfaces":
             addrs = [{"family": "inet", "address": self.ipv4, "scope": "universe", "flags": []}]
             if self.ipv6:

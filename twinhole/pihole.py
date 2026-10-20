@@ -132,6 +132,10 @@ class Pihole:
         params = {"from": start, "until": until, "count": count}
         return (await self._request("GET", "/stats/database/top_clients", params=params, timeout=60))["clients"]
 
+    async def network_devices(self) -> list[dict[str, Any]]:
+        params = {"max_devices": 1000, "max_addresses": 25}
+        return (await self._request("GET", "/network/devices", params=params, timeout=30))["devices"]
+
     async def queries(self, length: int) -> list[dict[str, Any]]:
         return (await self._request("GET", "/queries", params={"length": length}))["queries"]
 
