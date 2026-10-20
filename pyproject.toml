@@ -2,7 +2,7 @@
 name = "twinhole"
 version = "0.1.0"
 description = "Monitor, sync and manage a pair of Pi-hole v6 instances"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.15,<3.16"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
