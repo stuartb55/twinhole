@@ -115,7 +115,7 @@ async function refreshStatus() {
     return;
   }
   const s = state.status;
-  $("#mode").innerHTML = s.writes ? `<span class="pill warn">Writes enabled</span>` : `<span class="pill">Read-only</span>`;
+  $("#mode").innerHTML = s.writes ? "" : `<span class="pill">Read-only</span>`;
   $("#updated").textContent = `Checked ${fmt.time(Math.max(...s.piholes.map((p) => p.checked || 0)) || s.now)}`;
   const navOverview = $('#nav [data-page="overview"]');
   navOverview.innerHTML = "Overview" + (s.alerts.length ? `<span class="count">${s.alerts.length}</span>` : "");
