@@ -1,9 +1,18 @@
 # syntax=docker/dockerfile:1
-FROM python:3.13-slim AS base
+FROM python:3.15-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PYTHONUNBUFFERED=1
+
+# Dependencies come straight from uv.lock, which pins every package by hash.
+# --locked fails the build if uv.lock is out of date with pyproject.toml.
+FROM base AS deps
+COPY --from=ghcr.io/astral-sh/uv:0.13.3 /uv /usr/local/bin/uv
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
 
 # Chart.js 4.4.1, the official npm build, checked against a pinned SHA-256.
 FROM base AS vendor
@@ -19,8 +28,8 @@ EOF
 
 FROM base
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --require-hashes -r requirements.txt
+COPY --from=deps /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 COPY twinhole ./twinhole
 COPY --from=vendor /chart.umd.min.js ./twinhole/static/vendor/chart.umd.min.js
 ENV DB_PATH=/data/twinhole.db \

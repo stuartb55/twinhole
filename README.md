@@ -101,12 +101,9 @@ DB_PATH=/tmp/twinhole.db ALLOW_WRITES=true \
 uv run uvicorn twinhole.app:create_app --factory --port 8053
 ```
 
-After changing dependencies in `pyproject.toml`, refresh the pinned list used by
-the image:
-
-```sh
-uv export --no-dev --no-emit-project --format requirements-txt -o requirements.txt
-```
+Dependencies live in `pyproject.toml` and are pinned, with hashes, in `uv.lock`.
+The image installs from `uv.lock` directly, so after changing `pyproject.toml` run
+`uv lock` and commit both files. The build fails if they don't match.
 
 ### Layout
 
