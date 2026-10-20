@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>twinhole</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='11' cy='16' r='8' fill='%232f6fde'/><circle cx='21' cy='16' r='8' fill='%23d9822b' fill-opacity='.85'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="dots"><i style="background:var(--c-main)"></i><i style="background:var(--c-sec)"></i></span>twinhole</div>
+    <nav id="nav">
+      <button data-page="overview">Overview</button>
+      <button data-page="history">History</button>
+      <button data-page="queries">Query log</button>
+      <button data-page="sync">Sync</button>
+      <button data-page="manage">Manage</button>
+      <button data-page="actions">Actions</button>
+    </nav>
+    <div class="header-right"><span id="mode"></span><span id="updated"></span></div>
+  </header>
+  <main id="page"></main>
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

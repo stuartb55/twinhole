@@ -1,0 +1,28 @@
+[project]
+name = "twinhole"
+version = "0.1.0"
+description = "Monitor, sync and manage a pair of Pi-hole v6 instances"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "httpx>=0.28",
+    "dnspython>=2.7",
+    "tzdata>=2024.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "anyio>=4.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: needs the throwaway Pi-hole containers (scripts/test-piholes.sh up)",
+]
+addopts = "-m 'not integration'"

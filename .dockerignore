@@ -1,0 +1,9 @@
+.env
+.git
+.venv
+data
+tests
+scripts
+**/__pycache__
+.pytest_cache
+twinhole/static/vendor

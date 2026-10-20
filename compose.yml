@@ -1,0 +1,27 @@
+# Run on the Mac Mini under Lighter:
+#   docker --context lighter compose up -d --build
+name: twinhole
+
+services:
+  twinhole:
+    build: .
+    image: twinhole:local
+    container_name: twinhole
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8053:8053"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  default:
+    # The DNS check also queries each Pi-hole over IPv6; compose networks are IPv4-only otherwise.
+    enable_ipv6: true
