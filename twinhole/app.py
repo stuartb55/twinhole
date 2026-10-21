@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -267,14 +267,20 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
         }
 
     @app.get("/api/queries")
-    async def queries() -> dict[str, Any]:
+    async def queries(client: list[str] = Query(default=[])) -> dict[str, Any]:
+        # client narrows the log to one device; Pi-hole filters on one IP per call, so a
+        # device with several addresses means one call per address per Pi-hole.
         t = th()
         n = settings.query_log_size
-        results = await asyncio.gather(*(p.queries(n) for p in t.piholes), return_exceptions=True)
+        ips = list(dict.fromkeys(c.strip() for c in client if c.strip()))[:16] or [None]
+        calls = [(p, ip) for p in t.piholes for ip in ips]
+        results = await asyncio.gather(*(p.queries(n, ip) for p, ip in calls), return_exceptions=True)
         rows, errors = [], []
-        for p, res in zip(t.piholes, results):
+        for (p, _), res in zip(calls, results):
             if isinstance(res, PiholeError):
-                errors.append(f"{p.name}: {res.message}")
+                msg = f"{p.name}: {res.message}"
+                if msg not in errors:
+                    errors.append(msg)
                 continue
             if isinstance(res, BaseException):
                 raise res

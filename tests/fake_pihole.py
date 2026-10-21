@@ -125,7 +125,10 @@ class FakePihole:
                 return httpx.Response(200, json={"history": [b for b in self.history_db if lo <= b["timestamp"] <= hi]})
             return httpx.Response(200, json={"history": self.history})
         if head == "queries":
-            return httpx.Response(200, json={"queries": self.query_log[: int(params.get("length", 100))]})
+            log = self.query_log
+            if "client_ip" in params:
+                log = [q for q in log if (q.get("client") or {}).get("ip") == params["client_ip"]]
+            return httpx.Response(200, json={"queries": log[: int(params.get("length", 100))]})
         if head == "groups":
             return self._groups(method, parts, body)
         if head == "domains":

@@ -152,6 +152,16 @@ def test_query_log_merges_both_piholes_newest_first(make_client, main_fake, sec_
     assert [(r["domain"], r["pihole"]) for r in rows] == [("b.example", "192.168.1.33"), ("a.example", "192.168.1.118")]
 
 
+def test_query_log_filters_to_a_devices_addresses(make_client, main_fake, sec_fake):
+    main_fake.query_log = [
+        {"time": 100.0, "domain": "a.example", "status": "GRAVITY", "client": {"ip": "1.1.1.1"}},
+        {"time": 150.0, "domain": "other.example", "status": "FORWARDED", "client": {"ip": "9.9.9.9"}},
+    ]
+    sec_fake.query_log = [{"time": 200.0, "domain": "b.example", "status": "FORWARDED", "client": {"ip": "fd00::1"}}]
+    rows = make_client().get("/api/queries", params={"client": ["1.1.1.1", "fd00::1"]}).json()["queries"]
+    assert [r["domain"] for r in rows] == ["b.example", "a.example"]
+
+
 def test_query_log_reports_an_unreachable_pihole(make_client, main_fake):
     main_fake.down = True
     body = make_client().get("/api/queries").json()
