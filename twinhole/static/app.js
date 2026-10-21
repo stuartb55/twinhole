@@ -207,9 +207,9 @@ async function overview(el) {
       ${alerts}
       <div class="grid cols-2">${piholeCard(m, sec)}${piholeCard(sec, m)}</div>
       <div class="grid cols-2">
-        <section class="card">
+        <section class="card fill" id="day-card">
           <div class="card-head"><h2>Last 24 hours</h2><div class="right"><a href="#history">History →</a></div></div>
-          <div class="chart-box small"><canvas id="mini"></canvas></div>
+          <p class="empty">Loading…</p>
         </section>
         <section class="card">
           <div class="card-head"><h2>Sync</h2><div class="right"><a href="#sync">Review →</a></div></div>
@@ -219,8 +219,8 @@ async function overview(el) {
           ${eventsList(events.slice(0, 8))}
         </section>
       </div>`;
-    const hist = await api("/api/history?range=24h");
-    historyChart($("#mini"), hist, { compact: true });
+    const [hist, top] = await Promise.all([api("/api/history?range=24h"), api("/api/top?days=1&limit=5")]);
+    dayCard($("#day-card"), hist, top);
   };
   await draw();
   state.timers.push(setInterval(async () => {
@@ -230,6 +230,42 @@ async function overview(el) {
     state.charts = [];
     await draw();
   }, 15000));
+}
+
+function dayCard(card, hist, top) {
+  const byT = new Map();
+  let total = 0, blocked = 0;
+  for (const p of hist.piholes) {
+    for (const x of p.points) {
+      total += x.total;
+      blocked += x.blocked;
+      byT.set(x.t, (byT.get(x.t) || 0) + x.total);
+    }
+  }
+  let peak = null;
+  for (const [t, n] of byT) if (!peak || n > peak.n) peak = { t, n };
+  const hourly = byT.size ? Math.round(total / (byT.size * hist.step / 3600)) : null;
+  const swatch = (color, dashed) => `<i class="swatch${dashed ? " dashed" : ""}" style="--c:${color}"></i>`;
+  card.innerHTML = `
+    <div class="card-head"><h2>Last 24 hours</h2><span class="muted small">both Pi-holes</span><div class="right"><a href="#history">History →</a></div></div>
+    <div class="stats cols-4">
+      <div class="stat"><b>${fmt.num(total)}</b><span>queries</span></div>
+      <div class="stat"><b>${fmt.num(blocked)}</b><span>blocked (${total ? fmt.pct((100 * blocked) / total) : "–"})</span></div>
+      <div class="stat"><b>${fmt.num(hourly)}</b><span>per hour, average</span></div>
+      <div class="stat"><b>${peak ? fmt.num(peak.n) : "–"}</b><span>peak 10 min${peak ? `, ${new Date(peak.t * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}</span></div>
+    </div>
+    <div class="chart-box grow"><canvas></canvas></div>
+    <div class="legend">
+      ${hist.piholes.map((p) => `<span>${swatch(colorFor(p.id))}${esc(byId(p.id)?.name || p.name)}</span>`).join("")}
+      <span class="muted">${swatch("var(--muted)")}all queries</span>
+      <span class="muted">${swatch("var(--muted)", true)}blocked</span>
+    </div>
+    <h3 style="margin-top:16px">Yesterday's top <span class="muted small" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(top.last_day)}</span></h3>
+    <div class="grid cols-2">
+      <div>${topTable(top.blocked, "Blocked domain")}</div>
+      <div>${topTable(top.clients, "Client", true)}</div>
+    </div>`;
+  historyChart($("canvas", card), hist, { compact: true });
 }
 
 function eventsList(events) {
@@ -250,14 +286,27 @@ function historyChart(canvas, hist, { compact = false } = {}) {
   for (const p of hist.piholes) {
     const color = colorFor(p.id);
     const name = byId(p.id)?.name || p.id;
-    datasets.push({ label: `${name} – queries`, data: p.points.map((x) => ({ x: x.t * 1000, y: x.total })), borderColor: color, backgroundColor: color + "22", fill: !compact, borderWidth: 1.6, pointRadius: 0, tension: 0.25 });
-    datasets.push({ label: `${name} – blocked`, data: p.points.map((x) => ({ x: x.t * 1000, y: x.blocked })), borderColor: color, borderDash: [4, 3], borderWidth: 1.4, pointRadius: 0, tension: 0.25 });
+    datasets.push({ label: `${name} – queries`, kind: "total", data: p.points.map((x) => ({ x: x.t * 1000, y: x.total })), borderColor: color, backgroundColor: color + "22", fill: !compact, borderWidth: 1.6, pointRadius: 0, tension: 0.25 });
+    datasets.push({ label: `${name} – blocked`, kind: "blocked", data: p.points.map((x) => ({ x: x.t * 1000, y: x.blocked })), borderColor: color, borderDash: [4, 3], borderWidth: 1.4, pointRadius: 0, tension: 0.25 });
   }
   const daily = hist.step >= 86400;
+  // Ticks on whole local hours (24h) or local midnights (7d) instead of wherever the data happens to start.
+  const tickHours = hist.range === "24h" ? (compact ? 4 : 3) : hist.range === "7d" ? 24 : null;
+  const now = Date.now();
+  const bounds = hist.range === "24h" ? { min: now - 86400000, max: now } : {};
+  const alignedTicks = (axis) => {
+    const t = new Date(axis.min);
+    t.setMinutes(0, 0, 0);
+    if (tickHours === 24) t.setHours(0);
+    else t.setHours(Math.ceil(t.getHours() / tickHours) * tickHours);
+    const ticks = [];
+    for (; t.getTime() <= axis.max; t.setHours(t.getHours() + tickHours)) if (t.getTime() >= axis.min) ticks.push({ value: t.getTime() });
+    axis.ticks = ticks;
+  };
   const tickFmt = (v) => {
     const d = new Date(v);
     return daily || hist.range === "30d" ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
-      : hist.range === "7d" ? d.toLocaleDateString("en-GB", { weekday: "short", hour: "2-digit" })
+      : hist.range === "7d" ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })
       : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   };
   const grid = css("--line"), text = css("--muted");
@@ -269,8 +318,13 @@ function historyChart(canvas, hist, { compact = false } = {}) {
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       scales: {
-        x: { type: "linear", ticks: { callback: tickFmt, color: text, maxTicksLimit: compact ? 6 : 10 }, grid: { color: grid } },
-        y: { beginAtZero: true, ticks: { color: text }, grid: { color: grid } },
+        x: {
+          type: "linear", ...bounds,
+          ...(tickHours ? { afterBuildTicks: alignedTicks } : {}),
+          ticks: { callback: tickFmt, color: text, maxRotation: 0, ...(tickHours ? { autoSkip: false } : { maxTicksLimit: compact ? 6 : 10 }) },
+          grid: { color: grid },
+        },
+        y: { beginAtZero: true, ticks: { color: text, maxTicksLimit: compact ? 5 : 8, callback: (v) => fmt.num(v) }, grid: { color: grid } },
       },
       plugins: {
         legend: { display: !compact, labels: { color: text, boxWidth: 14 } },
@@ -278,7 +332,15 @@ function historyChart(canvas, hist, { compact = false } = {}) {
           callbacks: {
             title: (items) => {
               const d = new Date(items[0].parsed.x);
-              return daily ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+              if (daily) return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+              const end = new Date(d.getTime() + hist.step * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+              return `${d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}–${end}`;
+            },
+            label: (item) => ` ${item.dataset.label}: ${fmt.num(item.parsed.y)}`,
+            footer: (items) => {
+              const sum = (kind) => items.filter((i) => i.dataset.kind === kind).reduce((a, i) => a + i.parsed.y, 0);
+              const total = sum("total");
+              return total ? `${fmt.pct((100 * sum("blocked")) / total)} blocked` : "";
             },
           },
         },
