@@ -95,7 +95,7 @@ function cleanup() {
 }
 
 async function go() {
-  const page = (location.hash.slice(1) || "overview").split("/")[0];
+  const page = (location.hash.slice(1) || "overview").split(/[/?]/)[0];
   const fn = pages[page] || overview;
   cleanup();
   state.page = page in pages ? page : "overview";
@@ -401,12 +401,22 @@ async function history(el) {
 
 // ---------- query log --------------------------------------------------------------
 
+// #queries?client=ip1,ip2&name=Phone narrows the log to one device's addresses
+function hashParams() {
+  const h = location.hash;
+  return new URLSearchParams(h.includes("?") ? h.slice(h.indexOf("?") + 1) : "");
+}
+
 async function queries(el) {
   const f = state.queryFilter;
+  const params = hashParams();
+  const clients = (params.get("client") || "").split(",").filter(Boolean);
+  const device = params.get("name") || clients[0];
   el.innerHTML = `
     <section class="card">
       <div class="card-head"><h2>Query log</h2><span class="muted small" id="qcount"></span>
         <div class="right">
+          ${clients.length ? `<span class="pill main" title="${esc(clients.join("\n"))}">Device: ${esc(device)} <a href="#queries" class="clear" title="Show all devices">×</a></span>` : ""}
           <input type="search" id="qtext" placeholder="Filter domain or client" value="${esc(f.text)}">
           <select id="qstatus"><option value="all">All</option><option value="blocked">Blocked</option><option value="allowed">Allowed</option></select>
           <select id="qpihole"><option value="">Both Pi-holes</option>${piholes().map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>
@@ -419,7 +429,7 @@ async function queries(el) {
   $("#qstatus").value = f.status;
   $("#qpihole").value = f.pihole;
   const load = async () => {
-    state.queries = await api("/api/queries");
+    state.queries = await api("/api/queries" + (clients.length ? "?" + clients.map((c) => `client=${encodeURIComponent(c)}`).join("&") : ""));
     $("#qerrors").innerHTML = state.queries.errors.map((e) => `<div class="banner warn">${esc(e)}</div>`).join("");
     draw();
   };
@@ -432,7 +442,7 @@ async function queries(el) {
       if (f.pihole && q.pihole !== f.pihole) return false;
       return !text || (q.domain || "").toLowerCase().includes(text) || (q.client || "").includes(text) || (q.client_name || "").toLowerCase().includes(text);
     });
-    $("#qcount").textContent = `${rows.length} of ${state.queries?.queries.length || 0} recent queries`;
+    $("#qcount").textContent = `${rows.length} of ${state.queries?.queries.length || 0} recent queries${clients.length ? ` from ${device}` : ""}`;
     if (!rows.length) { $("#qtable").innerHTML = `<p class="empty">No matching queries</p>`; return; }
     const off = writesOff() ? "disabled title='Read-only mode'" : "";
     $("#qtable").innerHTML = `<table><thead><tr><th>Time</th><th>Pi-hole</th><th>Client</th><th>Domain</th><th>Type</th><th>Status</th><th class="num">Reply</th><th></th></tr></thead><tbody>${rows.map((q) => {
@@ -534,7 +544,9 @@ async function devices(el) {
             const isPihole = d.ips.some((ip) => piholeIps.has(ip));
             const more = d.ips.length > 1 ? ` <span class="muted small" title="${esc(d.ips.slice(1).join("\n"))}">+${d.ips.length - 1}</span>` : "";
             const row = `<tr>
-              <td>${d.name ? esc(d.name) : `<span class="muted">(no name)</span>`}
+              <td>${d.ips.length
+                  ? `<a href="#queries?${new URLSearchParams({ client: d.ips.join(","), name: d.name || d.ips[0] })}" title="Show this device's queries">${d.name ? esc(d.name) : "(no name)"}</a>`
+                  : d.name ? esc(d.name) : `<span class="muted">(no name)</span>`}
                 ${isPihole ? ` <span class="pill">Pi-hole itself</span>` : ""}
                 ${d.only_uses ? ` <span class="pill warn" title="Only ${esc(nameOf(d.only_uses))} has had queries from it in the last 7 days">only ${esc(nameOf(d.only_uses))}</span>` : ""}
                 <div class="muted small mono">${esc(d.mac || d.id)}</div></td>

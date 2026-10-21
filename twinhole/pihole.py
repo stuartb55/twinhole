@@ -136,8 +136,11 @@ class Pihole:
         params = {"max_devices": 1000, "max_addresses": 25}
         return (await self._request("GET", "/network/devices", params=params, timeout=30))["devices"]
 
-    async def queries(self, length: int) -> list[dict[str, Any]]:
-        return (await self._request("GET", "/queries", params={"length": length}))["queries"]
+    async def queries(self, length: int, client_ip: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"length": length}
+        if client_ip:
+            params["client_ip"] = client_ip
+        return (await self._request("GET", "/queries", params=params))["queries"]
 
     async def groups(self) -> list[dict[str, Any]]:
         return (await self._request("GET", "/groups"))["groups"]

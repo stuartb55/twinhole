@@ -112,6 +112,8 @@ h3 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; te
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
 .pill.bad { background: var(--bad-bg); color: var(--bad); }
 .pill.main { color: var(--c-main); } .pill.sec { color: var(--c-sec); }
+.pill a.clear { color: inherit; margin-left: 4px; font-weight: 600; }
+.pill a.clear:hover { text-decoration: none; opacity: .7; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
 
