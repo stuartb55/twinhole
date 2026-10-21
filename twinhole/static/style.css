@@ -165,6 +165,14 @@ td.actions { white-space: nowrap; text-align: right; }
 
 .chart-box { position: relative; height: 280px; }
 .chart-box.small { height: 180px; }
+.chart-box.grow { flex: 1 1 auto; height: auto; min-height: 220px; margin-top: 14px; }
+.card.fill { display: flex; flex-direction: column; }
+.stats.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 0; }
+@media (max-width: 600px) { .stats.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { display: inline-block; width: 18px; border-top: 2px solid var(--c); }
+.swatch.dashed { border-top-style: dashed; }
 
 .log {
   background: var(--panel-2); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12px;
