@@ -33,20 +33,71 @@ Pi-hole v6 instances. It runs as one container on the Mac Mini.
 
 ## Running it
 
+A ready-built image is published to GitHub Container Registry for amd64 and arm64:
+`ghcr.io/stuartb55/twinhole`. `latest` is the newest commit on `main`; each commit
+is also tagged `sha-<short sha>`, and release tags `vX.Y.Z` give `X.Y.Z` and `X.Y`.
+
+### Anywhere with Docker
+
+Make a folder with a `.env` (copy [`.env.example`](.env.example) and edit it) and
+this `compose.yml`:
+
+```yaml
+services:
+  twinhole:
+    image: ghcr.io/stuartb55/twinhole:latest
+    container_name: twinhole
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8053:8053"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  default:
+    enable_ipv6: true   # for the IPv6 DNS check
+```
+
+```sh
+docker compose up -d
+open http://localhost:8053
+```
+
+To update: `docker compose pull && docker compose up -d`.
+
+### On the Mac Mini
+
 Runs under [Lighter](https://formulae.brew.sh/formula/lighter). Your default Docker
-context stays as it is; twinhole always targets Lighter explicitly.
+context stays as it is; twinhole always targets Lighter explicitly. The
+`compose.yml` in this repo uses the published image.
 
 ```sh
 cp .env.example .env        # then edit it
-docker --context lighter compose up -d --build
+docker --context lighter compose pull
+docker --context lighter compose up -d
 open http://localhost:8053  # or http://<mac-ip>:8053, or the Mac's tailnet address
 ```
 
-To update after changing the code:
+To update to the newest published image (it's built and pushed a few minutes after
+each merge to `main`):
 
 ```sh
-docker --context lighter compose up -d --build
+git pull                    # picks up any compose.yml changes
+docker --context lighter compose pull
+docker --context lighter compose up -d
 ```
+
+To run your own local changes instead, build the image in place:
+`docker --context lighter compose up -d --build`. The next `compose pull` goes back
+to the published image.
 
 To see what it's doing:
 
@@ -54,7 +105,7 @@ To see what it's doing:
 docker --context lighter logs -f twinhole
 ```
 
-The database lives in `./data/twinhole.db`, so it survives rebuilds and is included
+The database lives in `./data/twinhole.db`, so it survives updates and is included
 in Time Machine backups.
 
 ### Read-only mode
@@ -104,6 +155,10 @@ uv run uvicorn twinhole.app:create_app --factory --port 8053
 Dependencies live in `pyproject.toml` and are pinned, with hashes, in `uv.lock`.
 The image installs from `uv.lock` directly, so after changing `pyproject.toml` run
 `uv lock` and commit both files. The build fails if they don't match.
+
+Every pull request runs the tests and a test build of the image. Merging to `main`
+publishes `latest`; pushing a `v*` tag publishes a versioned image
+(`.github/workflows/image.yml`).
 
 ### Layout
 
