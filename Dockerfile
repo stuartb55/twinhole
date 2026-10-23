@@ -27,6 +27,11 @@ open("/chart.umd.min.js", "wb").write(data)
 EOF
 
 FROM base
+# Runs as a fixed non-root user, so the /data volume must be writable by 1000:1000.
+RUN groupadd --system --gid 1000 twinhole \
+ && useradd --system --uid 1000 --gid 1000 --no-create-home --home-dir /nonexistent \
+      --shell /usr/sbin/nologin twinhole \
+ && mkdir /data && chown 1000:1000 /data
 WORKDIR /app
 COPY --from=deps /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
@@ -34,6 +39,7 @@ COPY twinhole ./twinhole
 COPY --from=vendor /chart.umd.min.js ./twinhole/static/vendor/chart.umd.min.js
 ENV DB_PATH=/data/twinhole.db \
     TZ=Europe/London
+USER 1000:1000
 EXPOSE 8053
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8053/healthz', timeout=3)"]
