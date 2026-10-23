@@ -42,8 +42,8 @@ is also tagged `sha-<short sha>`, and release tags `vX.Y.Z` give `X.Y.Z` and `X.
 
 ### With Docker Compose
 
-Make a folder with a `.env` (copy [`.env.example`](.env.example) and edit it) and
-this `compose.yml`:
+Make a folder with a `.env` (copy [`.env.example`](.env.example) and edit it), a
+`data` folder owned by UID 1000 (see [Data](#data)), and this `compose.yml`:
 
 ```yaml
 services:
@@ -98,6 +98,19 @@ Everything twinhole keeps (history, the event log and active alerts) is in one
 SQLite database, `/data/twinhole.db` inside the container. Mount `/data` as a volume
 as above so it survives updates and is easy to back up. The container runs with a
 read-only root filesystem, so `/data` is the only place it writes.
+
+The app runs as a non-root user, `twinhole` (UID:GID `1000:1000`), so the data
+folder must be writable by that user. Create it before the first start, otherwise
+Docker creates it owned by root and the app can't open its database:
+
+```sh
+mkdir data && sudo chown 1000:1000 data
+```
+
+**Upgrading from an image before this change:** older images ran as root, so the
+existing database files are root-owned. Run `sudo chown -R 1000:1000 data` once,
+then pull and restart. To run as a different UID, set `user: "<uid>:<gid>"` in
+`compose.yml` (or `--user` with `docker run`) and give the folder to that user.
 
 ## Configuration
 
