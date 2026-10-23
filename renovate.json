@@ -3,12 +3,5 @@
   "extends": [
     "config:recommended"
   ],
-  "packageRules": [
-    {
-      "description": "Automerge non-major updates once CI passes. Merges to main publish ghcr.io/stuartb55/twinhole:latest, so wait a few days after a release before taking it.",
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "automerge": true,
-      "minimumReleaseAge": "3 days"
-    }
-  ]
+  "automerge": true
 }
