@@ -43,7 +43,7 @@ is also tagged `sha-<short sha>`, and release tags `vX.Y.Z` give `X.Y.Z` and `X.
 ### With Docker Compose
 
 Make a folder with a `.env` (copy [`.env.example`](.env.example) and edit it), a
-`data` folder owned by UID 1000 (see [Data](#data)), and this `compose.yml`:
+`data` folder (see [Data](#data) for its ownership on Linux), and this `compose.yml`:
 
 ```yaml
 services:
@@ -99,18 +99,24 @@ SQLite database, `/data/twinhole.db` inside the container. Mount `/data` as a vo
 as above so it survives updates and is easy to back up. The container runs with a
 read-only root filesystem, so `/data` is the only place it writes.
 
-The app runs as a non-root user, `twinhole` (UID:GID `1000:1000`), so the data
-folder must be writable by that user. Create it before the first start, otherwise
-Docker creates it owned by root and the app can't open its database:
+The app runs as a non-root user, `twinhole` (UID:GID `1000:1000`), so on a Linux
+host the data folder must be writable by that user. Create it before the first
+start, otherwise Docker creates it owned by root and the app can't open its
+database:
 
 ```sh
 mkdir data && sudo chown 1000:1000 data
 ```
 
-**Upgrading from an image before this change:** older images ran as root, so the
-existing database files are root-owned. Run `sudo chown -R 1000:1000 data` once,
-then pull and restart. To run as a different UID, set `user: "<uid>:<gid>"` in
-`compose.yml` (or `--user` with `docker run`) and give the folder to that user.
+**Upgrading from an image before this change:** older images ran as root, so on
+Linux the existing database files are root-owned. Run `sudo chown -R 1000:1000 data`
+once, then pull and restart. To run as a different UID, set `user: "<uid>:<gid>"`
+in `compose.yml` (or `--user` with `docker run`) and give the folder to that user.
+
+**On macOS, don't chown the folder.** Docker on a Mac writes bind-mounted files as
+your own Mac user, whatever UID the container runs as, so the folder just needs to
+belong to you (`mkdir data` is enough). Changing its owner to 1000 locks your user
+out, and the app fails with "attempt to write a readonly database".
 
 ## Configuration
 
