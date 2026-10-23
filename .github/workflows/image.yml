@@ -51,7 +51,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=twinhole
             org.opencontainers.image.description=Monitor, sync and manage a pair of Pi-hole v6 instances
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
