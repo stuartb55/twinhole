@@ -1,6 +1,5 @@
-# Run on the Mac Mini under Lighter:
-#   docker --context lighter compose pull && docker --context lighter compose up -d
-# To run your own build instead: docker --context lighter compose up -d --build
+# Uses the published image: docker compose pull && docker compose up -d
+# To run your own build instead: docker compose up -d --build
 name: twinhole
 
 services:

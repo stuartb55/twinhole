@@ -1,11 +1,11 @@
 # twinhole
 
 Monitoring, alerts, history, one-way sync and shared management for a pair of
-Pi-hole v6 instances. It runs as one container on the Mac Mini.
+Pi-hole v6 instances, in a single container with a web dashboard.
 
 - **Monitor:** every 30 s it checks each Pi-hole's API, does a real DNS lookup over
   IPv4 and IPv6, and checks blocking state and gravity age.
-- **Alerts:** pushed to your ntfy server (set in `.env`), with a matching
+- **Alerts:** pushed to an [ntfy](https://ntfy.sh) server, with a matching
   "recovered" message. There are no repeats while a problem lasts, and active alerts
   survive restarts.
 - **History:** Pi-hole's 10-minute buckets are kept for 2 years, plus daily top-25
@@ -33,11 +33,14 @@ Pi-hole v6 instances. It runs as one container on the Mac Mini.
 
 ## Running it
 
+You need two Pi-hole v6 instances with no web password set, and Docker on a
+machine that can reach both of them.
+
 A ready-built image is published to GitHub Container Registry for amd64 and arm64:
 `ghcr.io/stuartb55/twinhole`. `latest` is the newest commit on `main`; each commit
 is also tagged `sha-<short sha>`, and release tags `vX.Y.Z` give `X.Y.Z` and `X.Y`.
 
-### Anywhere with Docker
+### With Docker Compose
 
 Make a folder with a `.env` (copy [`.env.example`](.env.example) and edit it) and
 this `compose.yml`:
@@ -68,51 +71,61 @@ networks:
 
 ```sh
 docker compose up -d
-open http://localhost:8053
 ```
 
-To update: `docker compose pull && docker compose up -d`.
+Then open `http://<host>:8053`. To update: `docker compose pull && docker compose up -d`.
+To follow the logs: `docker logs -f twinhole`.
 
-### On the Mac Mini
+If you've cloned this repo, its own `compose.yml` is the same file with a `build:`
+line added, so `docker compose up -d --build` runs your local changes instead.
 
-Runs under [Lighter](https://formulae.brew.sh/formula/lighter). Your default Docker
-context stays as it is; twinhole always targets Lighter explicitly. The
-`compose.yml` in this repo uses the published image.
+### With `docker run`
 
 ```sh
-cp .env.example .env        # then edit it
-docker --context lighter compose pull
-docker --context lighter compose up -d
-open http://localhost:8053  # or http://<mac-ip>:8053, or the Mac's tailnet address
+docker run -d --name twinhole --restart unless-stopped \
+  --env-file .env -p 8053:8053 -v "$PWD/data:/data" \
+  --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+  ghcr.io/stuartb55/twinhole:latest
 ```
 
-To update to the newest published image (it's built and pushed a few minutes after
-each merge to `main`):
+The default Docker bridge network has no IPv6, so with `docker run` either set
+`PIHOLE_MAIN_IPV6=off` and `PIHOLE_SECONDARY_IPV6=off`, or attach it to a network
+created with `--ipv6`.
 
-```sh
-git pull                    # picks up any compose.yml changes
-docker --context lighter compose pull
-docker --context lighter compose up -d
-```
+### Data
 
-To run your own local changes instead, build the image in place:
-`docker --context lighter compose up -d --build`. The next `compose pull` goes back
-to the published image.
+Everything twinhole keeps (history, the event log and active alerts) is in one
+SQLite database, `/data/twinhole.db` inside the container. Mount `/data` as a volume
+as above so it survives updates and is easy to back up. The container runs with a
+read-only root filesystem, so `/data` is the only place it writes.
 
-To see what it's doing:
+## Configuration
 
-```sh
-docker --context lighter logs -f twinhole
-```
+All settings are environment variables, normally kept in `.env`.
+[`.env.example`](.env.example) lists them all with comments; only the two URLs are
+required.
 
-The database lives in `./data/twinhole.db`, so it survives updates and is included
-in Time Machine backups.
+| Variable | Default | What it does |
+|---|---|---|
+| `PIHOLE_MAIN_URL` | (required) | Main Pi-hole, the source of truth, e.g. `http://192.168.1.10` |
+| `PIHOLE_SECONDARY_URL` | (required) | Secondary Pi-hole, synced to mirror the main one |
+| `PIHOLE_MAIN_NAME`, `PIHOLE_SECONDARY_NAME` | URL host | Names shown in the dashboard and alerts |
+| `PIHOLE_MAIN_DNS`, `PIHOLE_SECONDARY_DNS` | URL host, port 53 | `host:port` the DNS check queries |
+| `PIHOLE_MAIN_IPV6`, `PIHOLE_SECONDARY_IPV6` | `auto` | IPv6 DNS check: `auto` asks the Pi-hole for its address, `off` skips it, or give an address |
+| `NTFY_URL`, `NTFY_TOPIC` | (none) | ntfy server and topic for alerts; leave empty for no alerts |
+| `NTFY_TOKEN` | (none) | Access token, if your ntfy server needs one to publish |
+| `ALLOW_WRITES` | `false` | See [read-only mode](#read-only-mode) |
+| `TZ` | `Europe/London` | Time zone for daily history and charts |
+
+The rest (check intervals, alert thresholds, history retention) are tuning knobs
+with sensible defaults, listed at the bottom of `.env.example`. Restart the
+container after changing `.env`.
 
 ### Read-only mode
 
 `ALLOW_WRITES=false` (the default) keeps monitoring, history and the sync preview
 working, but refuses Apply, edits, blocking changes and gravity runs. Set it to
-`true` and restart (`docker --context lighter compose up -d`) to enable them.
+`true` and restart (`docker compose up -d`) to enable them.
 
 ## Things worth knowing
 
@@ -121,13 +134,12 @@ working, but refuses Apply, edits, blocking changes and gravity runs. Set it to
 - **Local DNS and CNAME changes restart Pi-hole's DNS for about a second.** This is
   Pi-hole's own behaviour. Sync batches them into a single restart, and the 2-check
   debounce means it won't trigger an alert.
-- **Nothing in the dashboard requires a login.** Anyone on the LAN or tailnet can use
-  it, including making changes once writes are on. Don't expose port 8053 to the
-  internet.
-- **The DNS check queries `example.com`** through each Pi-hole every 30 s, so those
-  lookups appear in the query log, coming from the Mac.
-- **twinhole runs only while Lighter does.** Lighter starts at login, but doesn't
-  restart itself after a clean shutdown (`lighter start` brings it back).
+- **Nothing in the dashboard requires a login.** Anyone who can reach port 8053 can
+  use it, including making changes once writes are on. Keep it on your LAN or behind
+  a VPN, and don't expose it to the internet.
+- **The DNS check queries `example.com`** (or `DNS_PROBE_DOMAIN`) through each
+  Pi-hole every 30 s, so those lookups appear in the query log, coming from the
+  machine running twinhole.
 
 ## Development
 
