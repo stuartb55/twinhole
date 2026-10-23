@@ -1,11 +1,13 @@
 # Run on the Mac Mini under Lighter:
-#   docker --context lighter compose up -d --build
+#   docker --context lighter compose pull && docker --context lighter compose up -d
+# To run your own build instead: docker --context lighter compose up -d --build
 name: twinhole
 
 services:
   twinhole:
+    image: ghcr.io/stuartb55/twinhole:latest
     build: .
-    image: twinhole:local
+    pull_policy: missing
     container_name: twinhole
     restart: unless-stopped
     env_file: .env
