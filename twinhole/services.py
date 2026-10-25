@@ -12,7 +12,9 @@ from .alerts import DEFAULT, AlertManager
 from .config import Settings
 from .pihole import Pihole, PiholeError
 from .store import Store
-from .sync import Change, apply, apply_change, norm_cname, norm_host, plan, plan_id, snapshot, summarize
+from .sync import (
+    Change, Snapshot, apply, apply_change, norm_cname, norm_host, plan, plan_id, snapshot, summarize
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,9 +79,18 @@ class SyncService:
         self.alerts = alerts
         self.gravity = gravity
         self._lock = asyncio.Lock()
-        self.last: dict[str, Any] = {"checked": None, "plan_id": None, "summary": None, "changes": [], "error": None}
+        self.auto = {"enabled": self.auto_enabled, "max_deletes": settings.auto_sync_max_deletes, "held": None}
+        self.last: dict[str, Any] = {
+            "checked": None, "plan_id": None, "summary": None, "changes": [], "error": None, "auto": self.auto,
+        }
+        if settings.auto_sync and not settings.allow_writes:
+            log.warning("AUTO_SYNC is on but ALLOW_WRITES is off, so auto-sync won't change anything")
 
-    async def _compute(self) -> tuple[list[Change], dict[str, int]]:
+    @property
+    def auto_enabled(self) -> bool:
+        return self.settings.auto_sync and self.settings.allow_writes
+
+    async def _compute(self) -> tuple[list[Change], dict[str, int], Snapshot]:
         try:
             (want, _), (have, group_ids) = await asyncio.gather(snapshot(self.main), snapshot(self.secondary))
         except PiholeError as e:
@@ -92,9 +103,10 @@ class SyncService:
             "summary": summarize(changes),
             "changes": [c.as_dict() for c in changes],
             "error": None,
+            "auto": self.auto,
         }
         await self._observe_drift(changes)
-        return changes, group_ids
+        return changes, group_ids, want
 
     async def _observe_drift(self, changes: list[Change]) -> None:
         await self.alerts.observe(
@@ -114,31 +126,68 @@ class SyncService:
     async def check_drift(self) -> None:
         async with self._lock:
             try:
-                await self._compute()
+                changes, group_ids, want = await self._compute()
             except PiholeError as e:
                 log.info("drift check skipped: %s", e)
+                return  # a failed read never leads to an auto-sync
+            if self.auto_enabled:
+                await self._auto_sync(changes, group_ids, want)
+
+    def hold_reason(self, changes: list[Change], want: Snapshot) -> str | None:
+        """Why auto-sync should leave these changes for a person to review, if it should."""
+        deletes = [c for c in changes if c.action == "delete"]
+        if deletes and not any(want[r] for r in ("domains", "lists", "clients", "hosts", "cnames")):
+            return f"{self.main.name} looks empty, so it would wipe {self.secondary.name}"
+        if len(deletes) > self.settings.auto_sync_max_deletes:
+            return f"it would delete {len(deletes)} items (the limit is {self.settings.auto_sync_max_deletes})"
+        lists = [c for c in deletes if c.resource == "lists"]
+        if lists:
+            return f"it would remove {len(lists)} adlist{'s' if len(lists) > 1 else ''}"
+        return None
+
+    async def _auto_sync(self, changes: list[Change], group_ids: dict[str, int], want: Snapshot) -> None:
+        held = self.hold_reason(changes, want) if changes else None
+        await self.alerts.observe(
+            "sync:held", held is not None, pihole=None,
+            title="Auto-sync is waiting for you",
+            detail=f"Auto-sync held back ({summarize(changes)}) because {held}. "
+            "Review it on the twinhole Sync page and press Apply if it's right.",
+            priority=DEFAULT, recovered_detail="Nothing is waiting for review now",
+        )
+        self.auto["held"] = held and {"reason": held, "plan_id": plan_id(changes), "since": int(time.time())}
+        if not changes or held:
+            return
+        if self.gravity.running(self.secondary):
+            log.info("auto-sync waiting for gravity to finish on %s", self.secondary.name)
+            return
+        await self._apply(changes, group_ids, auto=True)
 
     async def apply(self, expected_plan_id: str) -> dict[str, Any]:
         async with self._lock:
-            changes, group_ids = await self._compute()
+            changes, group_ids, _ = await self._compute()
             if plan_id(changes) != expected_plan_id:
                 raise PlanChanged("The Pi-holes changed since the preview. Review the new preview and apply again.")
             if not changes:
                 return {"results": [], "gravity_started": False, "after": self.last}
-            results = await apply(self.secondary, changes, group_ids)
-            failed = sum(1 for r in results if not r["ok"])
-            message = f"Synced {self.secondary.name} from {self.main.name}: {summarize(changes)}"
-            if failed:
-                message += f" ({failed} failed)"
-            self.store.add_event("sync", message, self.secondary.id)
-            gravity_started = False
-            if any(r["resource"] == "lists" and r["ok"] for r in results):
-                gravity_started = self.gravity.start(self.secondary, "adlists changed by sync")
-            try:
-                await self._compute()
-            except PiholeError:
-                pass
-            return {"results": results, "gravity_started": gravity_started, "after": self.last}
+            return await self._apply(changes, group_ids)
+
+    async def _apply(self, changes: list[Change], group_ids: dict[str, int], auto: bool = False) -> dict[str, Any]:
+        results = await apply(self.secondary, changes, group_ids)
+        failed = sum(1 for r in results if not r["ok"])
+        verb = "Auto-synced" if auto else "Synced"
+        message = f"{verb} {self.secondary.name} from {self.main.name}: {summarize(changes)}"
+        if failed:
+            message += f" ({failed} failed)"
+        self.store.add_event("sync", message, self.secondary.id)
+        gravity_started = False
+        if any(r["resource"] == "lists" and r["ok"] for r in results):
+            gravity_started = self.gravity.start(self.secondary, "adlists changed by sync")
+        try:
+            await self._compute()
+            self.auto["held"] = None
+        except PiholeError:
+            pass
+        return {"results": results, "gravity_started": gravity_started, "after": self.last}
 
 
 class Editor:

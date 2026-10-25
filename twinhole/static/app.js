@@ -202,6 +202,7 @@ async function overview(el) {
     const sync = s.sync;
     const syncText = sync.error ? `<span class="dot bad"></span>Couldn't compare: ${esc(sync.error)}`
       : !sync.checked ? `<span class="muted">Not checked yet</span>`
+      : sync.auto?.held ? `<span class="dot bad"></span>Auto-sync waiting for you: ${esc(sync.summary)}`
       : sync.count ? `<span class="dot warn"></span>${esc(sync.summary)}` : `<span class="dot ok"></span>In sync`;
     el.innerHTML = `
       ${alerts}
@@ -214,7 +215,7 @@ async function overview(el) {
         <section class="card">
           <div class="card-head"><h2>Sync</h2><div class="right"><a href="#sync">Review →</a></div></div>
           <p style="display:flex;gap:8px;align-items:center;margin:0 0 6px">${syncText}</p>
-          <p class="small muted" style="margin:0">${esc(sec.name)} mirrors ${esc(m.name)}. Checked ${fmt.ago(sync.checked)}.</p>
+          <p class="small muted" style="margin:0">${esc(sec.name)} mirrors ${esc(m.name)}${sync.auto?.enabled ? ", synced automatically" : ""}. Checked ${fmt.ago(sync.checked)}.</p>
           <h3 style="margin-top:18px">Recent events</h3>
           ${eventsList(events.slice(0, 8))}
         </section>
@@ -614,6 +615,12 @@ function changeDiff(c) {
   return fields.map((k) => `<div class="diff">${esc(k)}: <del>${esc(show(c.before[k]))}</del> → <ins>${esc(show(c.after[k]))}</ins></div>`).join("");
 }
 
+function autoNote(auto) {
+  if (!auto?.enabled) return "";
+  if (auto.held) return `<div class="banner warn"><b>Auto-sync is waiting for you.</b> It held these changes back because ${esc(auto.held.reason)}. Check them, then press Apply if they're right.</div>`;
+  return `<p class="small muted">Auto-sync is on: changes are applied after each background check, except ones that would delete more than ${auto.max_deletes} items, remove an adlist, or copy an empty ${esc(state.status.piholes[0].name)}. Those wait for you.</p>`;
+}
+
 async function sync(el) {
   const s = state.status;
   const [m, sec] = s.piholes;
@@ -647,6 +654,7 @@ async function sync(el) {
           </div>
         </div>
         <p class="small muted" style="margin-top:-4px">One-way sync of groups, domains, adlists, clients, local DNS and CNAME records. ${esc(sec.name)} is made an exact mirror, so anything only it has is deleted.${writesOff() ? " <b>Read-only mode:</b> you can preview, but Apply is off until ALLOW_WRITES=true." : ""}</p>
+        ${autoNote(preview.auto)}
         ${preview.error ? `<div class="banner bad">Couldn't compare: ${esc(preview.error)}</div>` : ""}
         ${!preview.checked ? `<p class="empty">Press “Check now” to compare the two Pi-holes.</p>`
           : !changes.length ? `<p class="empty"><span class="dot ok"></span> Both Pi-holes match.</p>`

@@ -36,6 +36,8 @@ class Settings:
     blocking_grace: int = 10 * 60
     gravity_max_age: int = 8 * 86400
     drift_grace: int = 60 * 60
+    auto_sync: bool = False
+    auto_sync_max_deletes: int = 5
     retention_days: int = 730
     backfill_days: int = 92
     query_log_size: int = 500
@@ -82,6 +84,10 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
         raise ConfigError(f"{key} must be a whole number, got {raw!r}") from e
 
 
+def _bool(env: Mapping[str, str], key: str) -> bool:
+    return env.get(key, "").strip().lower() in ("1", "true", "yes")
+
+
 def load(env: Mapping[str, str] = os.environ) -> Settings:
     main = _pihole(env, "main")
     secondary = _pihole(env, "secondary")
@@ -93,7 +99,7 @@ def load(env: Mapping[str, str] = os.environ) -> Settings:
         ntfy_url=env.get("NTFY_URL", "").strip().rstrip("/"),
         ntfy_topic=env.get("NTFY_TOPIC", "").strip(),
         ntfy_token=env.get("NTFY_TOKEN", "").strip(),
-        allow_writes=env.get("ALLOW_WRITES", "").strip().lower() in ("1", "true", "yes"),
+        allow_writes=_bool(env, "ALLOW_WRITES"),
         check_interval=_int(env, "CHECK_INTERVAL", 30),
         history_interval=_int(env, "HISTORY_INTERVAL", 600),
         drift_interval=_int(env, "DRIFT_INTERVAL", 900),
@@ -103,6 +109,8 @@ def load(env: Mapping[str, str] = os.environ) -> Settings:
         blocking_grace=_int(env, "BLOCKING_GRACE_MIN", 10) * 60,
         gravity_max_age=_int(env, "GRAVITY_MAX_DAYS", 8) * 86400,
         drift_grace=_int(env, "DRIFT_GRACE_MIN", 60) * 60,
+        auto_sync=_bool(env, "AUTO_SYNC"),
+        auto_sync_max_deletes=_int(env, "AUTO_SYNC_MAX_DELETES", 5),
         retention_days=_int(env, "RETENTION_DAYS", 730),
         backfill_days=_int(env, "BACKFILL_DAYS", 92),
         query_log_size=_int(env, "QUERY_LOG_SIZE", 500),
