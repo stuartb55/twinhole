@@ -156,3 +156,38 @@ async def test_resolver_checks_skip_a_pihole_whose_dns_is_down(
     await mon.run_cycle()
     assert mon.status["192.168.1.118"]["resolver"]["recursion"] is None
     assert mon.status["192.168.1.118"]["resolver"]["dnssec"] is None
+
+
+async def test_checks_are_rolled_up_for_uptime_and_latency(
+    settings, main, secondary, main_fake, store, notifier, fake_dns, clock
+):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    clock.t = 1_792_500_000 - 1_792_500_000 % 600  # start of a bucket
+    for _ in range(3):
+        await mon.run_cycle()
+        clock.advance(30)
+    main_fake.down = True
+    fake_dns.failing = {"192.168.1.118"}
+    await mon.run_cycle()
+
+    up = store.uptime(0)
+    assert up["192.168.1.118"]["total"] == 4 and up["192.168.1.118"]["up"] == 3
+    assert up["192.168.1.33"] == {"total": 4, "up": 4, "first": clock.t - 90}
+    (bucket,) = store.latency_series(0, 600)["192.168.1.118"]
+    assert bucket["dns_ms"] == 3.2 and bucket["rec_ms"] == 40.0 and bucket["up_pct"] == 75.0
+
+
+async def test_recovered_urgent_alerts_become_the_last_outage(
+    settings, main, secondary, main_fake, store, notifier, fake_dns, clock
+):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    main_fake.down = True
+    for _ in range(2):
+        await mon.run_cycle()
+        clock.advance(30)
+    assert store.last_past_alert("192.168.1.118", 5) is None
+    main_fake.down = False
+    await mon.run_cycle()
+    outage = store.last_past_alert("192.168.1.118", 5)
+    assert outage["title"] == "Main is unreachable"
+    assert outage["until"] - outage["since"] == 60
