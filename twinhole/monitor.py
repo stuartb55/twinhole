@@ -1,10 +1,16 @@
-"""Health checks every CHECK_INTERVAL: API, DNS over IPv4/IPv6, blocking state, gravity age."""
+"""Health checks every CHECK_INTERVAL: API, DNS over IPv4/IPv6, blocking state, gravity age.
+
+Less often it also checks the resolver behind each Pi-hole (Unbound, say): a lookup of a
+random name that can't be cached proves it really recurses, and a lookup of a domain with
+deliberately broken DNSSEC, which must fail, proves it validates.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
 import logging
+import secrets
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -45,6 +51,22 @@ def pick_ipv6(interfaces: list[dict[str, Any]], ipv4: str) -> str | None:
     return None
 
 
+def _upstreams(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Real upstream servers (not Pi-hole's cache or blocklist, which have port -1), busiest first."""
+    out = []
+    for u in raw:
+        if (u.get("port") or -1) < 0:
+            continue
+        stats = u.get("statistics") or {}
+        out.append({
+            "server": f"{u.get('ip') or u.get('name')}#{u['port']}",
+            "name": u.get("name") or u.get("ip"),
+            "count": u.get("count") or 0,
+            "ms": round((stats.get("response") or 0) * 1000, 1),
+        })
+    return sorted(out, key=lambda u: -u["count"])
+
+
 def _versions(raw: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for part in ("core", "web", "ftl"):
@@ -70,6 +92,8 @@ class Monitor:
         self.probe = probe
         self.clock = clock
         self._slow_due: dict[str, float] = {}
+        self._recursion_due: dict[str, float] = {}
+        self._dnssec_due: dict[str, float] = {}
         self._ipv6: dict[str, str | None] = {}
         self.status: dict[str, dict[str, Any]] = {
             p.id: {
@@ -85,6 +109,7 @@ class Monitor:
                 "gravity": None,
                 "summary": None,
                 "versions": None,
+                "resolver": {"recursion": None, "dnssec": None, "upstreams": None},
             }
             for p in piholes
         }
@@ -110,6 +135,11 @@ class Monitor:
             api_error = None
         except PiholeError as e:
             api_error = e.message
+        if api_error is None:
+            try:
+                st["resolver"]["upstreams"] = _upstreams(await p.upstreams())
+            except PiholeError as e:
+                log.info("upstream stats failed for %s: %s", p.name, e)
 
         if api_error is None and now >= self._slow_due.get(p.id, 0):
             await self._slow_refresh(p, st)
@@ -141,6 +171,50 @@ class Monitor:
             st["blocking_timer"] = blocking.get("timer")
 
         await self._evaluate(p, now, api_error, r4, r6, summary, blocking)
+        await self._check_resolver(p, now, r4)
+
+    def _due(self, due: dict[str, float], p: Pihole, now: float, interval: int) -> bool:
+        if interval <= 0 or now < due.get(p.id, 0):
+            return False
+        due[p.id] = now + interval
+        return True
+
+    async def _check_resolver(self, p: Pihole, now: float, r4: dnsprobe.ProbeResult) -> None:
+        s, a, st = self.settings, self.alerts, self.status[p.id]["resolver"]
+        if not r4.ok:
+            return  # the DNS alert already covers a Pi-hole that doesn't answer at all
+
+        if self._due(self._recursion_due, p, now, s.recursion_interval):
+            name = f"twinhole-{secrets.token_hex(4)}.{s.dns_probe_domain}"
+            r = await self.probe(p.cfg.dns_host, p.cfg.dns_port, name, s.recursion_timeout)
+            # NXDOMAIN is the right answer: it came from the domain's own servers, so the
+            # resolver went out and asked.
+            ok = r.rcode in ("NOERROR", "NXDOMAIN")
+            st["recursion"] = {"ok": ok, "ms": None if r.ms is None else round(r.ms, 1),
+                               "error": None if ok else r.error, "checked": int(now)}
+            await a.observe(
+                f"{p.id}:recursion", not ok, pihole=p.id,
+                title=f"{p.name} can't resolve new names",
+                detail=f"A lookup that has to go past Pi-hole's cache failed ({r.error}). "
+                "Its upstream resolver (Unbound?) may be down.",
+                priority=URGENT, after_count=s.fail_threshold,
+                recovered_detail="Its resolver is answering new lookups again",
+            )
+
+        if self._due(self._dnssec_due, p, now, s.dnssec_interval):
+            r = await self.probe(p.cfg.dns_host, p.cfg.dns_port, s.dnssec_probe_domain, s.recursion_timeout)
+            # A validating resolver refuses this domain with SERVFAIL. An answer means it
+            # isn't validating; anything else (a timeout, say) tells us nothing.
+            validating = True if r.rcode == "SERVFAIL" else False if r.ok else None
+            st["dnssec"] = {"ok": validating, "checked": int(now),
+                            "detail": {True: "validating", False: "not validating"}.get(validating, r.error)}
+            await a.observe(
+                f"{p.id}:dnssec", None if validating is None else not validating, pihole=p.id,
+                title=f"{p.name} isn't validating DNSSEC",
+                detail=f"{s.dnssec_probe_domain} has broken DNSSEC on purpose and should fail, but it "
+                "resolved. Check the resolver's DNSSEC settings and trust anchor.",
+                priority=DEFAULT, recovered_detail="DNSSEC validation is working again",
+            )
 
     async def _slow_refresh(self, p: Pihole, st: dict[str, Any]) -> None:
         try:

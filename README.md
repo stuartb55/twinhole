@@ -4,7 +4,11 @@ Monitoring, alerts, history, one-way sync and shared management for a pair of
 Pi-hole v6 instances, in a single container with a web dashboard.
 
 - **Monitor:** every 30 s it checks each Pi-hole's API, does a real DNS lookup over
-  IPv4 and IPv6, and checks blocking state and gravity age.
+  IPv4 and IPv6, and checks blocking state and gravity age. Every 5 minutes it
+  looks up a random name that can't be cached, to prove the resolver behind each
+  Pi-hole (Unbound, say) still recurses, and every hour it checks DNSSEC is being
+  validated. The Overview shows each Pi-hole's upstream, its average reply time and
+  how much is answered from cache.
 - **Alerts:** pushed to an [ntfy](https://ntfy.sh) server, with a matching
   "recovered" message. There are no repeats while a problem lasts, and active alerts
   survive restarts.
@@ -26,6 +30,8 @@ Pi-hole v6 instances, in a single container with a web dashboard.
 |---|---|
 | API unreachable for 2 checks in a row | urgent (5) |
 | DNS lookup fails or takes over 1 s (IPv4 or IPv6), 2 checks in a row | urgent (5) |
+| Resolver can't look up new names (a random, uncached name fails), 2 checks in a row | urgent (5) |
+| DNSSEC not validated (`dnssec-failed.org` resolves when it should fail) | default (3) |
 | Blocking off for more than 10 min | default (3) |
 | Gravity older than 8 days | default (3) |
 | Secondary out of sync with main for more than 1 h | default (3) |
@@ -167,6 +173,9 @@ review it on the Sync page. If either Pi-hole can't be read, it does nothing.
 - **Nothing in the dashboard requires a login.** Anyone who can reach port 8053 can
   use it, including making changes once writes are on. Keep it on your LAN or behind
   a VPN, and don't expose it to the internet.
+- **The recursion check looks up names like `twinhole-1a2b3c4d.example.com`**, one per
+  Pi-hole every 5 minutes, so they appear in the query log too. NXDOMAIN is the
+  expected answer.
 - **The DNS check queries `example.com`** (or `DNS_PROBE_DOMAIN`) through each
   Pi-hole every 30 s, so those lookups appear in the query log, coming from the
   machine running twinhole.
