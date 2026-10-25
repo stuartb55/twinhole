@@ -115,6 +115,9 @@ class Pihole:
     async def interfaces(self) -> list[dict[str, Any]]:
         return (await self._request("GET", "/network/interfaces"))["interfaces"]
 
+    async def upstreams(self) -> list[dict[str, Any]]:
+        return (await self._request("GET", "/stats/upstreams"))["upstreams"]
+
     async def history(self) -> list[dict[str, Any]]:
         return (await self._request("GET", "/history"))["history"]
 

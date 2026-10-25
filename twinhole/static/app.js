@@ -137,7 +137,8 @@ function health(p) {
   const alerts = state.status.alerts.filter((a) => a.key.startsWith(p.id + ":"));
   if (p.api.ok === null) return ["unknown", "Checking…"];
   if (!p.api.ok || (p.dns.v4 && !p.dns.v4.ok)) return ["bad", "Not working"];
-  if (alerts.length || (p.dns.v6 && !p.dns.v6.ok) || p.blocking !== "enabled") return ["warn", "Needs attention"];
+  const r = p.resolver || {};
+  if (alerts.length || (p.dns.v6 && !p.dns.v6.ok) || p.blocking !== "enabled" || r.recursion?.ok === false || r.dnssec?.ok === false) return ["warn", "Needs attention"];
   return ["ok", "Healthy"];
 }
 
@@ -145,6 +146,37 @@ function dnsCell(r) {
   if (!r) return `<span class="muted">not checked (no IPv6 address)</span>`;
   if (r.ok) return `<span class="dot ok"></span>${r.ms} ms <span class="muted mono">${esc(r.server)}</span>`;
   return `<span class="dot bad"></span>${esc(r.error)} <span class="muted mono">${esc(r.server)}</span>`;
+}
+
+function upstreamCell(p) {
+  const ups = p.resolver?.upstreams;
+  if (!ups) return `<span class="muted">–</span>`;
+  if (!ups.length) return `<span class="muted">none used yet</span>`;
+  const s = p.summary || {};
+  const forwarded = s.forwarded || 0;
+  return ups.map((u) => `<span class="mono">${esc(u.server)}</span> · ${u.ms} ms avg${ups.length > 1 && forwarded ? ` · ${fmt.pct((100 * u.count) / forwarded)}` : ""}`).join("<br>");
+}
+
+function cacheCell(p) {
+  const s = p.summary || {};
+  const answered = (s.cached || 0) + (s.forwarded || 0);
+  if (!answered) return `<span class="muted">–</span>`;
+  return `${fmt.pct((100 * s.cached) / answered)} of lookups answered from cache`;
+}
+
+function recursionCell(p) {
+  const r = p.resolver?.recursion;
+  if (!r) return `<span class="muted">not checked yet</span>`;
+  const when = `<span class="muted">checked ${fmt.ago(r.checked)}</span>`;
+  return r.ok ? `<span class="dot ok"></span>resolving new names${r.ms != null ? ` · ${r.ms} ms` : ""} ${when}`
+    : `<span class="dot bad"></span>${esc(r.error || "failing")} ${when}`;
+}
+
+function dnssecCell(p) {
+  const d = p.resolver?.dnssec;
+  if (!d) return `<span class="muted">not checked yet</span>`;
+  const dot = d.ok === true ? "ok" : d.ok === false ? "bad" : "unknown";
+  return `<span class="dot ${dot}"></span>${esc(d.detail || "unknown")} <span class="muted">checked ${fmt.ago(d.checked)}</span>`;
 }
 
 function versionsCell(p, other) {
@@ -183,6 +215,10 @@ function piholeCard(p, other) {
       <dt>API</dt><dd>${p.api.ok === null ? "–" : p.api.ok ? `<span class="dot ok"></span>answering` : `<span class="dot bad"></span>${esc(p.api.error)}`}</dd>
       <dt>DNS (IPv4)</dt><dd>${dnsCell(p.dns.v4)}</dd>
       <dt>DNS (IPv6)</dt><dd>${dnsCell(p.dns.v6)}</dd>
+      <dt>Upstream</dt><dd>${upstreamCell(p)}</dd>
+      <dt>Recursion</dt><dd>${recursionCell(p)}</dd>
+      <dt>DNSSEC</dt><dd>${dnssecCell(p)}</dd>
+      <dt>Cache</dt><dd>${cacheCell(p)}</dd>
       <dt>Blocking</dt><dd>${blocking}</dd>
       <dt>Gravity</dt><dd>${gAge == null ? "–" : `<span class="dot ${gAge > 8 ? "warn" : "ok"}"></span>updated ${fmt.ago(g.last_update)} · ${fmt.num(g.domains_being_blocked)} domains`}</dd>
       <dt>Versions</dt><dd>${versionsCell(p, other)}</dd>

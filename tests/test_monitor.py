@@ -91,3 +91,68 @@ async def test_stale_gravity_alerts(settings, main, secondary, sec_fake, store, 
     await mon.run_cycle()
     assert [m["title"] for m in notifier.sent] == ["Secondary gravity is stale"]
     assert "9 days" in notifier.sent[0]["message"]
+
+
+async def test_resolver_checks_record_recursion_dnssec_and_upstreams(
+    settings, main, secondary, store, notifier, fake_dns, clock
+):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    res = mon.status["192.168.1.118"]["resolver"]
+    assert res["recursion"]["ok"] is True
+    assert res["dnssec"]["ok"] is True
+    assert res["upstreams"] == [{"server": "127.0.0.1#5335", "name": "localhost", "count": 350, "ms": 25.5}]
+    random_names = [d for d in fake_dns.domains if d.startswith("twinhole-")]
+    assert len(random_names) == 2 and random_names[0] != random_names[1]
+    assert random_names[0].endswith(".example.com")
+    assert notifier.sent == []
+
+
+async def test_resolver_checks_run_on_their_own_schedule(
+    settings, main, secondary, store, notifier, fake_dns, clock
+):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    clock.advance(30)
+    await mon.run_cycle()
+    assert sum(d.startswith("twinhole-") for d in fake_dns.domains) == 2  # once per Pi-hole, not per cycle
+    clock.advance(300)
+    await mon.run_cycle()
+    assert sum(d.startswith("twinhole-") for d in fake_dns.domains) == 4
+    assert fake_dns.domains.count("dnssec-failed.org") == 2
+
+
+async def test_dead_resolver_alerts_after_two_recursion_checks(
+    settings, main, secondary, store, notifier, fake_dns, clock
+):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    fake_dns.no_recursion = {"192.168.1.118"}
+    await mon.run_cycle()
+    assert notifier.sent == []
+    clock.advance(300)
+    await mon.run_cycle()
+    assert [m["title"] for m in notifier.sent] == ["Main can't resolve new names"]
+    assert mon.status["192.168.1.118"]["resolver"]["recursion"]["ok"] is False
+
+    fake_dns.no_recursion = set()
+    clock.advance(300)
+    await mon.run_cycle()
+    assert notifier.sent[-1]["title"] == "Recovered - Main can't resolve new names"
+
+
+async def test_dnssec_off_alerts(settings, main, secondary, store, notifier, fake_dns, clock):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    fake_dns.no_dnssec = {"192.168.1.33"}
+    await mon.run_cycle()
+    assert [m["title"] for m in notifier.sent] == ["Secondary isn't validating DNSSEC"]
+    assert mon.status["192.168.1.33"]["resolver"]["dnssec"]["ok"] is False
+
+
+async def test_resolver_checks_skip_a_pihole_whose_dns_is_down(
+    settings, main, secondary, store, notifier, fake_dns, clock
+):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    fake_dns.failing = {"192.168.1.118"}
+    await mon.run_cycle()
+    assert mon.status["192.168.1.118"]["resolver"]["recursion"] is None
+    assert mon.status["192.168.1.118"]["resolver"]["dnssec"] is None

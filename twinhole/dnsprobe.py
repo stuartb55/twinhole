@@ -20,6 +20,7 @@ class ProbeResult:
     ok: bool
     ms: float | None
     error: str | None = None
+    rcode: str | None = None  # e.g. "NOERROR", "NXDOMAIN", "SERVFAIL"; None when nothing came back
 
 
 async def probe(server: str, port: int, domain: str, timeout: float) -> ProbeResult:
@@ -34,11 +35,12 @@ async def probe(server: str, port: int, domain: str, timeout: float) -> ProbeRes
     except (OSError, dns.exception.DNSException) as e:
         return ProbeResult(server, False, None, str(e) or type(e).__name__)
     ms = (time.perf_counter() - start) * 1000
+    rcode = dns.rcode.to_text(reply.rcode())
     if reply.rcode() != dns.rcode.NOERROR:
-        return ProbeResult(server, False, ms, f"answered {dns.rcode.to_text(reply.rcode())}")
+        return ProbeResult(server, False, ms, f"answered {rcode}", rcode)
     if not reply.answer:
-        return ProbeResult(server, False, ms, "empty answer")
-    return ProbeResult(server, True, ms)
+        return ProbeResult(server, False, ms, "empty answer", rcode)
+    return ProbeResult(server, True, ms, None, rcode)
 
 
 async def _address(server: str) -> str:

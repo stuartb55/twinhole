@@ -42,6 +42,12 @@ class FakePihole:
         self.query_log: list[dict[str, Any]] = []
         self.devices: list[dict[str, Any]] = []  # the network table
         self.top: dict[str, list[dict[str, Any]]] = {"domains": [], "blocked": [], "clients": []}
+        self.upstreams: list[dict[str, Any]] = [
+            {"ip": "blocklist", "name": "blocklist", "port": -1, "count": 250, "statistics": {"response": 0, "variance": 0}},
+            {"ip": "cache", "name": "cache", "port": -1, "count": 400, "statistics": {"response": 0, "variance": 0}},
+            {"ip": "127.0.0.1", "name": "localhost", "port": 5335, "count": 350,
+             "statistics": {"response": 0.0254856, "variance": 0.02}},
+        ]
         self.calls: list[tuple[str, str]] = []
         self.restarts = 0  # FTL restarts caused by local DNS / CNAME changes
 
@@ -98,6 +104,8 @@ class FakePihole:
                 "clients": {"active": 12, "total": 20},
                 "gravity": {"domains_being_blocked": 100000, "last_update": self.gravity_last_update},
             })
+        if head == "stats" and parts[1] == "upstreams":
+            return httpx.Response(200, json={"upstreams": self.upstreams, "forwarded_queries": 350, "total_queries": 1000})
         if head == "stats" and parts[1] == "database":
             if parts[2] == "top_domains":
                 kind = "blocked" if params.get("blocked") == "true" else "domains"

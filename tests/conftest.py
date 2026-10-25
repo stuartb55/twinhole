@@ -86,17 +86,32 @@ def notifier() -> RecordingNotifier:
 
 
 class FakeDNS:
-    """Stands in for dnsprobe.probe; set `failing` to the servers that should fail."""
+    """Stands in for dnsprobe.probe; set `failing` to the servers that should fail.
+
+    Like a healthy validating resolver, random never-cached names get NXDOMAIN and the
+    broken-DNSSEC test domain gets SERVFAIL. Set `no_recursion` to servers whose resolver
+    is down, and `no_dnssec` to servers that don't validate.
+    """
 
     def __init__(self):
         self.failing: set[str] = set()
+        self.no_recursion: set[str] = set()
+        self.no_dnssec: set[str] = set()
         self.asked: list[str] = []
+        self.domains: list[str] = []
 
     async def __call__(self, server, port, domain, timeout):
         self.asked.append(server)
+        self.domains.append(domain)
         if server in self.failing:
             return ProbeResult(server, False, None, "no answer within 1000 ms")
-        return ProbeResult(server, True, 3.2)
+        if domain.startswith("twinhole-"):
+            if server in self.no_recursion:
+                return ProbeResult(server, False, 2.0, "answered SERVFAIL", "SERVFAIL")
+            return ProbeResult(server, False, 40.0, "answered NXDOMAIN", "NXDOMAIN")
+        if domain == "dnssec-failed.org" and server not in self.no_dnssec:
+            return ProbeResult(server, False, 30.0, "answered SERVFAIL", "SERVFAIL")
+        return ProbeResult(server, True, 3.2, None, "NOERROR")
 
 
 @pytest.fixture
