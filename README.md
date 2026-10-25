@@ -12,6 +12,9 @@ Pi-hole v6 instances, in a single container with a web dashboard.
 - **Alerts:** pushed to an [ntfy](https://ntfy.sh) server, with a matching
   "recovered" message. There are no repeats while a problem lasts, and active alerts
   survive restarts.
+- **Uptime:** twinhole keeps its own check results, so the Overview shows each
+  Pi-hole's uptime over 30 days and its last outage, and History charts DNS reply
+  times (cached answers and new lookups).
 - **History:** Pi-hole's 10-minute buckets are kept for 2 years, plus daily top-25
   domains, blocked domains and clients. On first run it imports what each Pi-hole
   still holds (about 90 days).

@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import config, devices, dnsprobe
-from .alerts import AlertManager, NoNotifier, Notifier, Ntfy
+from .alerts import URGENT, AlertManager, NoNotifier, Notifier, Ntfy
 from .history import History
 from .monitor import Monitor, Probe
 from .pihole import Pihole, PiholeError
@@ -115,6 +115,17 @@ async def _every(seconds: int, fn: Callable[[], Awaitable[None]], name: str, del
         except Exception:
             log.exception("%s loop failed; trying again in %ss", name, seconds)
         await asyncio.sleep(seconds)
+
+
+def reliability(t: Twinhole, p: Pihole) -> dict[str, Any]:
+    """Uptime over the last 30 days (from twinhole's own checks) and the last outage that recovered."""
+    now = int(t.clock())
+    u = t.store.uptime(now - 30 * DAY).get(p.id)
+    return {
+        "uptime_pct": round(100 * u["up"] / u["total"], 3) if u and u["total"] else None,
+        "since": u["first"] if u else None,
+        "last_outage": t.store.last_past_alert(p.id, URGENT),
+    }
 
 
 # --- request bodies ---------------------------------------------------------------
@@ -226,7 +237,7 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
         return {
             "now": int(t.clock()),
             "writes": settings.allow_writes,
-            "piholes": [t.monitor.status[p.id] for p in t.piholes],
+            "piholes": [t.monitor.status[p.id] | {"reliability": reliability(t, p)} for p in t.piholes],
             "alerts": sorted(t.alerts.active.values(), key=lambda a: a["since"]),
             "sync": {k: last[k] for k in ("checked", "summary", "error", "auto")} | {"count": len(last["changes"])},
             "gravity": t.gravity.status(),
@@ -245,11 +256,16 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
         back, step = RANGES[range]
         now = int(t.clock())
         offset = int(datetime.now(t.history.tz).utcoffset().total_seconds()) if step >= DAY else 0
-        series = t.store.history_series(0 if back is None else now - back, step, offset)
+        since = 0 if back is None else now - back
+        series = t.store.history_series(since, step, offset)
+        latency = t.store.latency_series(since, step)
         return {
             "range": range,
             "step": step,
-            "piholes": [{"id": p.id, "name": p.name, "points": series.get(p.id, [])} for p in t.piholes],
+            "piholes": [
+                {"id": p.id, "name": p.name, "points": series.get(p.id, []), "latency": latency.get(p.id, [])}
+                for p in t.piholes
+            ],
         }
 
     @app.get("/api/top")

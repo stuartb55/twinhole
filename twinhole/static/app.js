@@ -179,6 +179,29 @@ function dnssecCell(p) {
   return `<span class="dot ${dot}"></span>${esc(d.detail || "unknown")} <span class="muted">checked ${fmt.ago(d.checked)}</span>`;
 }
 
+function uptimeCell(p) {
+  const r = p.reliability || {};
+  if (r.uptime_pct == null) return `<span class="muted">not measured yet</span>`;
+  const partial = r.since && state.status.now - r.since < 29 * 86400;
+  const dot = r.uptime_pct >= 99.9 ? "ok" : r.uptime_pct >= 99 ? "warn" : "bad";
+  return `<span class="dot ${dot}"></span>${r.uptime_pct.toFixed(r.uptime_pct === 100 ? 0 : 2)}% <span class="muted">${partial ? `since ${new Date(r.since * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : "last 30 days"}</span>`;
+}
+
+function outageCell(p) {
+  const now = state.status.alerts.find((a) => ["api", "dns4", "dns6", "recursion"].some((k) => a.key === `${p.id}:${k}`));
+  if (now) return `<span class="dot bad"></span>now: ${esc(now.title)} <span class="muted">since ${fmt.dateTime(now.since)}</span>`;
+  const o = p.reliability?.last_outage;
+  if (!o) return `<span class="muted">none recorded</span>`;
+  return `${fmt.dateTime(o.since)}, ${duration(o.until - o.since)} <span class="muted">${esc(o.title)}</span>`;
+}
+
+function duration(s) {
+  if (s < 120) return `${Math.round(s)} s`;
+  if (s < 7200) return `${Math.round(s / 60)} min`;
+  if (s < 172800) return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
+  return `${Math.round(s / 86400)} days`;
+}
+
 function versionsCell(p, other) {
   if (!p.versions) return `<span class="muted">–</span>`;
   const parts = ["core", "web", "ftl"].map((k) => {
@@ -212,6 +235,8 @@ function piholeCard(p, other) {
       <div class="stat"><b>${fmt.num(s.clients_active)}</b><span>active clients</span></div>
     </div>
     <dl class="kv">
+      <dt>Uptime</dt><dd>${uptimeCell(p)}</dd>
+      <dt>Last outage</dt><dd>${outageCell(p)}</dd>
       <dt>API</dt><dd>${p.api.ok === null ? "–" : p.api.ok ? `<span class="dot ok"></span>answering` : `<span class="dot bad"></span>${esc(p.api.error)}`}</dd>
       <dt>DNS (IPv4)</dt><dd>${dnsCell(p.dns.v4)}</dd>
       <dt>DNS (IPv6)</dt><dd>${dnsCell(p.dns.v6)}</dd>
@@ -314,20 +339,10 @@ function eventsList(events) {
 
 // ---------- history ----------------------------------------------------------------
 
-function historyChart(canvas, hist, { compact = false } = {}) {
-  if (typeof Chart === "undefined") {
-    canvas.parentElement.innerHTML = `<p class="empty">Chart library missing (static/vendor/chart.umd.min.js)</p>`;
-    return;
-  }
-  const datasets = [];
-  for (const p of hist.piholes) {
-    const color = colorFor(p.id);
-    const name = byId(p.id)?.name || p.id;
-    datasets.push({ label: `${name} – queries`, kind: "total", data: p.points.map((x) => ({ x: x.t * 1000, y: x.total })), borderColor: color, backgroundColor: color + "22", fill: !compact, borderWidth: 1.6, pointRadius: 0, tension: 0.25 });
-    datasets.push({ label: `${name} – blocked`, kind: "blocked", data: p.points.map((x) => ({ x: x.t * 1000, y: x.blocked })), borderColor: color, borderDash: [4, 3], borderWidth: 1.4, pointRadius: 0, tension: 0.25 });
-  }
+// The x axis both history charts share: ticks on whole local hours (24h) or local
+// midnights (7d) instead of wherever the data happens to start.
+function timeAxis(hist, compact = false) {
   const daily = hist.step >= 86400;
-  // Ticks on whole local hours (24h) or local midnights (7d) instead of wherever the data happens to start.
   const tickHours = hist.range === "24h" ? (compact ? 4 : 3) : hist.range === "7d" ? 24 : null;
   const now = Date.now();
   const bounds = hist.range === "24h" ? { min: now - 86400000, max: now } : {};
@@ -346,6 +361,62 @@ function historyChart(canvas, hist, { compact = false } = {}) {
       : hist.range === "7d" ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })
       : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   };
+  return {
+    type: "linear", ...bounds,
+    ...(tickHours ? { afterBuildTicks: alignedTicks } : {}),
+    ticks: { callback: tickFmt, color: css("--muted"), maxRotation: 0, ...(tickHours ? { autoSkip: false } : { maxTicksLimit: compact ? 6 : 10 }) },
+    grid: { color: css("--line") },
+  };
+}
+
+function bucketTitle(hist, x) {
+  const d = new Date(x);
+  if (hist.step >= 86400) return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const end = new Date(d.getTime() + hist.step * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}–${end}`;
+}
+
+function latencyChart(canvas, hist) {
+  if (typeof Chart === "undefined") return;
+  const datasets = [];
+  for (const p of hist.piholes) {
+    const color = colorFor(p.id);
+    const name = byId(p.id)?.name || p.id;
+    datasets.push({ label: `${name} – DNS check`, data: p.latency.map((x) => ({ x: x.t * 1000, y: x.dns_ms })), borderColor: color, borderWidth: 1.6, pointRadius: 0, tension: 0.25, spanGaps: false });
+    datasets.push({ label: `${name} – new names`, data: p.latency.map((x) => ({ x: x.t * 1000, y: x.rec_ms })), borderColor: color, borderDash: [4, 3], borderWidth: 1.4, pointRadius: p.latency.length < 60 ? 2 : 0, tension: 0.25, spanGaps: true });
+  }
+  const grid = css("--line"), text = css("--muted");
+  state.charts.push(new Chart(canvas, {
+    type: "line",
+    data: { datasets },
+    options: {
+      animation: false,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: timeAxis(hist),
+        y: { beginAtZero: true, ticks: { color: text, maxTicksLimit: 6, callback: (v) => `${v} ms` }, grid: { color: grid } },
+      },
+      plugins: {
+        legend: { labels: { color: text, boxWidth: 14 } },
+        tooltip: { callbacks: { title: (items) => bucketTitle(hist, items[0].parsed.x), label: (item) => ` ${item.dataset.label}: ${item.parsed.y} ms` } },
+      },
+    },
+  }));
+}
+
+function historyChart(canvas, hist, { compact = false } = {}) {
+  if (typeof Chart === "undefined") {
+    canvas.parentElement.innerHTML = `<p class="empty">Chart library missing (static/vendor/chart.umd.min.js)</p>`;
+    return;
+  }
+  const datasets = [];
+  for (const p of hist.piholes) {
+    const color = colorFor(p.id);
+    const name = byId(p.id)?.name || p.id;
+    datasets.push({ label: `${name} – queries`, kind: "total", data: p.points.map((x) => ({ x: x.t * 1000, y: x.total })), borderColor: color, backgroundColor: color + "22", fill: !compact, borderWidth: 1.6, pointRadius: 0, tension: 0.25 });
+    datasets.push({ label: `${name} – blocked`, kind: "blocked", data: p.points.map((x) => ({ x: x.t * 1000, y: x.blocked })), borderColor: color, borderDash: [4, 3], borderWidth: 1.4, pointRadius: 0, tension: 0.25 });
+  }
   const grid = css("--line"), text = css("--muted");
   const chart = new Chart(canvas, {
     type: "line",
@@ -355,24 +426,14 @@ function historyChart(canvas, hist, { compact = false } = {}) {
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       scales: {
-        x: {
-          type: "linear", ...bounds,
-          ...(tickHours ? { afterBuildTicks: alignedTicks } : {}),
-          ticks: { callback: tickFmt, color: text, maxRotation: 0, ...(tickHours ? { autoSkip: false } : { maxTicksLimit: compact ? 6 : 10 }) },
-          grid: { color: grid },
-        },
+        x: timeAxis(hist, compact),
         y: { beginAtZero: true, ticks: { color: text, maxTicksLimit: compact ? 5 : 8, callback: (v) => fmt.num(v) }, grid: { color: grid } },
       },
       plugins: {
         legend: { display: !compact, labels: { color: text, boxWidth: 14 } },
         tooltip: {
           callbacks: {
-            title: (items) => {
-              const d = new Date(items[0].parsed.x);
-              if (daily) return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-              const end = new Date(d.getTime() + hist.step * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-              return `${d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}–${end}`;
-            },
+            title: (items) => bucketTitle(hist, items[0].parsed.x),
             label: (item) => ` ${item.dataset.label}: ${fmt.num(item.parsed.y)}`,
             footer: (items) => {
               const sum = (kind) => items.filter((i) => i.dataset.kind === kind).reduce((a, i) => a + i.parsed.y, 0);
@@ -414,6 +475,12 @@ async function history(el) {
       <p class="small muted" style="margin:8px 0 0">Solid lines are all queries, dashed lines are blocked queries, in ${hist.step >= 86400 ? "daily" : hist.step >= 3600 ? `${hist.step / 3600}-hour` : "10-minute"} totals.</p>
     </section>
     <section class="card">
+      <div class="card-head"><h2>DNS reply time</h2></div>
+      ${hist.piholes.some((p) => p.latency.length) ? `<div class="chart-box"><canvas id="latency"></canvas></div>
+      <p class="small muted" style="margin:8px 0 0">Average reply time of twinhole's own checks. Solid lines are the regular DNS check (usually answered from cache), dashed lines are lookups of new names, which go through the resolver behind each Pi-hole.</p>`
+      : `<p class="empty">No checks recorded yet. Reply times appear here once twinhole has been running a while.</p>`}
+    </section>
+    <section class="card">
       <div class="card-head"><h2>Top lists</h2>
         <span class="muted small">${esc(top.first_day)} to ${esc(top.last_day)}</span>
         <div class="right">${seg("topPihole", pihOptions, state.topPihole)} ${seg("topDays", [[1, "Yesterday"], [7, "7 days"], [30, "30 days"], [365, "1 year"]], state.topDays)}</div>
@@ -425,6 +492,7 @@ async function history(el) {
       </div>
     </section>`;
   historyChart($("#hist"), hist);
+  if ($("#latency")) latencyChart($("#latency"), hist);
   el.onclick = (e) => {
     const b = e.target.closest("[data-seg] button");
     if (!b) return;

@@ -1,4 +1,5 @@
-"""SQLite storage: 10-minute history buckets, daily top lists, events and active alerts."""
+"""SQLite storage: 10-minute history buckets, daily top lists, health-check rollups,
+events, active alerts and past outages."""
 
 from __future__ import annotations
 
@@ -45,6 +46,30 @@ CREATE TABLE IF NOT EXISTS active_alerts (
     title TEXT NOT NULL,
     detail TEXT NOT NULL
 );
+
+-- twinhole's own health checks, rolled up into 10-minute buckets
+CREATE TABLE IF NOT EXISTS checks (
+    pihole TEXT NOT NULL,
+    ts INTEGER NOT NULL,        -- start of the bucket
+    total INTEGER NOT NULL,     -- checks run
+    up INTEGER NOT NULL,        -- checks where the API and the IPv4 DNS lookup both worked
+    dns_ms REAL NOT NULL,       -- sum of IPv4 DNS reply times (ms) over dns_n
+    dns_n INTEGER NOT NULL,
+    rec_ms REAL NOT NULL,       -- sum of recursion-check reply times (ms) over rec_n
+    rec_n INTEGER NOT NULL,
+    PRIMARY KEY (pihole, ts)
+) WITHOUT ROWID;
+
+-- alerts that have recovered, for "last outage" and similar
+CREATE TABLE IF NOT EXISTS past_alerts (
+    key TEXT NOT NULL,
+    pihole TEXT,
+    priority INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    since INTEGER NOT NULL,
+    until INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS past_alerts_until ON past_alerts (until);
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -191,10 +216,63 @@ class Store:
     def active_alerts(self) -> dict[str, dict[str, Any]]:
         return {r["key"]: dict(r) for r in self._exec("SELECT * FROM active_alerts")}
 
+    # --- health-check rollups and outages ---------------------------------------
+
+    def record_check(
+        self, pihole: str, ts: int, up: bool, dns_ms: float | None, rec_ms: float | None, bucket: int = 600
+    ) -> None:
+        self._exec(
+            "INSERT INTO checks (pihole, ts, total, up, dns_ms, dns_n, rec_ms, rec_n) VALUES (?, ?, 1, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (pihole, ts) DO UPDATE SET total = total + 1, up = up + excluded.up, "
+            "dns_ms = dns_ms + excluded.dns_ms, dns_n = dns_n + excluded.dns_n, "
+            "rec_ms = rec_ms + excluded.rec_ms, rec_n = rec_n + excluded.rec_n",
+            (pihole, ts - ts % bucket, int(up), dns_ms or 0, int(dns_ms is not None),
+             rec_ms or 0, int(rec_ms is not None)),
+        )
+
+    def uptime(self, since: int) -> dict[str, dict[str, Any]]:
+        rows = self._exec(
+            "SELECT pihole, SUM(total) AS total, SUM(up) AS up, MIN(ts) AS first FROM checks WHERE ts >= ? GROUP BY pihole",
+            (since,),
+        )
+        return {r["pihole"]: {"total": r["total"], "up": r["up"], "first": r["first"]} for r in rows}
+
+    def latency_series(self, since: int, step: int) -> dict[str, list[dict[str, Any]]]:
+        rows = self._exec(
+            "SELECT pihole, (ts / ?) * ? AS t, SUM(dns_ms) AS dns_ms, SUM(dns_n) AS dns_n, "
+            "SUM(rec_ms) AS rec_ms, SUM(rec_n) AS rec_n, SUM(total) AS total, SUM(up) AS up "
+            "FROM checks WHERE ts >= ? GROUP BY pihole, t ORDER BY t",
+            (step, step, since),
+        )
+        out: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            out.setdefault(r["pihole"], []).append({
+                "t": r["t"],
+                "dns_ms": round(r["dns_ms"] / r["dns_n"], 1) if r["dns_n"] else None,
+                "rec_ms": round(r["rec_ms"] / r["rec_n"], 1) if r["rec_n"] else None,
+                "up_pct": round(100 * r["up"] / r["total"], 2) if r["total"] else None,
+            })
+        return out
+
+    def add_past_alert(self, key: str, pihole: str | None, priority: int, title: str, since: int, until: int) -> None:
+        self._exec(
+            "INSERT INTO past_alerts (key, pihole, priority, title, since, until) VALUES (?, ?, ?, ?, ?, ?)",
+            (key, pihole, priority, title, since, until),
+        )
+
+    def last_past_alert(self, pihole: str, min_priority: int) -> dict[str, Any] | None:
+        rows = self._exec(
+            "SELECT * FROM past_alerts WHERE pihole = ? AND priority >= ? ORDER BY until DESC LIMIT 1",
+            (pihole, min_priority),
+        )
+        return dict(rows[0]) if rows else None
+
     # --- retention ----------------------------------------------------------
 
     def prune(self, retention_days: int, oldest_day: str, now: int | None = None) -> None:
         cutoff = (now or int(time.time())) - retention_days * DAY
         self._exec("DELETE FROM history WHERE ts < ?", (cutoff,))
         self._exec("DELETE FROM events WHERE ts < ?", (cutoff,))
+        self._exec("DELETE FROM checks WHERE ts < ?", (cutoff,))
+        self._exec("DELETE FROM past_alerts WHERE until < ?", (cutoff,))
         self._exec("DELETE FROM daily_top WHERE day < ?", (oldest_day,))

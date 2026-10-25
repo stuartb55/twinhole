@@ -84,7 +84,10 @@ class AlertManager:
             if key in self.active:
                 return
             if p.count >= after_count and now - p.since >= after_seconds:
-                self.active[key] = {"key": key, "since": int(p.since), "title": title, "detail": detail}
+                self.active[key] = {
+                    "key": key, "since": int(p.since), "title": title, "detail": detail,
+                    "pihole": pihole, "priority": priority,
+                }
                 self.store.save_alert(key, int(p.since), title, detail)
                 self.store.add_event("alert", f"{title}: {detail}", pihole)
                 await self._send(title, detail, priority, ["warning"])
@@ -94,6 +97,10 @@ class AlertManager:
         alert = self.active.pop(key, None)
         if alert:
             self.store.clear_alert(key)
+            self.store.add_past_alert(
+                key, alert.get("pihole", pihole), alert.get("priority") or priority, alert["title"],
+                int(alert["since"]), int(now),
+            )
             lasted = _duration(now - alert["since"])
             message = f"{recovered_detail or 'OK again'} (was down {lasted})"
             self.store.add_event("recovered", f"Recovered - {alert['title']}: {message}", pihole)

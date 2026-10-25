@@ -171,7 +171,10 @@ class Monitor:
             st["blocking_timer"] = blocking.get("timer")
 
         await self._evaluate(p, now, api_error, r4, r6, summary, blocking)
-        await self._check_resolver(p, now, r4)
+        rec_ms = await self._check_resolver(p, now, r4)
+        self.alerts.store.record_check(
+            p.id, int(now), api_error is None and r4.ok, r4.ms if r4.ok else None, rec_ms
+        )
 
     def _due(self, due: dict[str, float], p: Pihole, now: float, interval: int) -> bool:
         if interval <= 0 or now < due.get(p.id, 0):
@@ -179,10 +182,12 @@ class Monitor:
         due[p.id] = now + interval
         return True
 
-    async def _check_resolver(self, p: Pihole, now: float, r4: dnsprobe.ProbeResult) -> None:
+    async def _check_resolver(self, p: Pihole, now: float, r4: dnsprobe.ProbeResult) -> float | None:
+        """Run the resolver checks that are due. Returns the recursion check's reply time, if one ran and worked."""
         s, a, st = self.settings, self.alerts, self.status[p.id]["resolver"]
+        rec_ms = None
         if not r4.ok:
-            return  # the DNS alert already covers a Pi-hole that doesn't answer at all
+            return None  # the DNS alert already covers a Pi-hole that doesn't answer at all
 
         if self._due(self._recursion_due, p, now, s.recursion_interval):
             name = f"twinhole-{secrets.token_hex(4)}.{s.dns_probe_domain}"
@@ -190,6 +195,7 @@ class Monitor:
             # NXDOMAIN is the right answer: it came from the domain's own servers, so the
             # resolver went out and asked.
             ok = r.rcode in ("NOERROR", "NXDOMAIN")
+            rec_ms = r.ms if ok else None
             st["recursion"] = {"ok": ok, "ms": None if r.ms is None else round(r.ms, 1),
                                "error": None if ok else r.error, "checked": int(now)}
             await a.observe(
@@ -215,6 +221,7 @@ class Monitor:
                 "resolved. Check the resolver's DNSSEC settings and trust anchor.",
                 priority=DEFAULT, recovered_detail="DNSSEC validation is working again",
             )
+        return rec_ms
 
     async def _slow_refresh(self, p: Pihole, st: dict[str, Any]) -> None:
         try:
