@@ -117,6 +117,8 @@ async function refreshStatus() {
     return;
   }
   const s = state.status;
+  // Update notices are sent to ntfy but aren't problems: the Versions row already shows them.
+  s.alerts = s.alerts.filter((a) => !a.key.endsWith(":update"));
   $("#mode").innerHTML = s.writes ? "" : `<span class="pill">Read-only</span>`;
   $("#updated").textContent = `Checked ${fmt.time(Math.max(...s.piholes.map((p) => p.checked || 0)) || s.now)}`;
   const navOverview = $('#nav [data-page="overview"]');

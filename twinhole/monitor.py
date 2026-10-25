@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from . import dnsprobe
-from .alerts import DEFAULT, URGENT, AlertManager
+from .alerts import DEFAULT, LOW, URGENT, AlertManager
 from .config import Settings
 from .pihole import Pihole, PiholeError
 
@@ -95,6 +95,8 @@ class Monitor:
         self._recursion_due: dict[str, float] = {}
         self._dnssec_due: dict[str, float] = {}
         self._ipv6: dict[str, str | None] = {}
+        self.started = clock()
+        self.last_cycle: float | None = None
         self.status: dict[str, dict[str, Any]] = {
             p.id: {
                 "id": p.id,
@@ -116,6 +118,12 @@ class Monitor:
 
     async def run_cycle(self) -> None:
         await asyncio.gather(*(self._check(p) for p in self.piholes))
+        self.last_cycle = self.clock()
+
+    def stalled(self) -> bool:
+        """True when no check cycle has finished for a while, e.g. the loop is stuck."""
+        last = self.last_cycle or self.started
+        return self.clock() - last > max(3 * self.settings.check_interval, 120)
 
     def _ipv6_target(self, p: Pihole) -> str | None:
         if p.cfg.ipv6 == "off":
@@ -228,6 +236,15 @@ class Monitor:
             st["versions"] = _versions(await p.version())
         except PiholeError as e:
             log.info("version check failed for %s: %s", p.name, e)
+        else:
+            v = st["versions"]
+            updates = [f"{'FTL' if k == 'ftl' else k.title()} {v[k]['local']} → {v[k]['remote']}" for k in v if v[k]["update"]]
+            await self.alerts.observe(
+                f"{p.id}:update", bool(updates), pihole=p.id,
+                title=f"{p.name} has a Pi-hole update",
+                detail=", ".join(updates) + ". Update it with `pihole -up` (or pull a new image).",
+                priority=LOW, recovered_detail="Up to date",
+            )
         if p.cfg.ipv6 == "auto":
             try:
                 self._ipv6[p.id] = pick_ipv6(await p.interfaces(), p.cfg.dns_host)
