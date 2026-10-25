@@ -37,6 +37,7 @@ Pi-hole v6 instances, in a single container with a web dashboard.
 | DNSSEC not validated (`dnssec-failed.org` resolves when it should fail) | default (3) |
 | Blocking off for more than 10 min | default (3) |
 | Gravity older than 8 days | default (3) |
+| A Pi-hole core, web or FTL update is available | low (2) |
 | Secondary out of sync with main for more than 1 h | default (3) |
 | Auto-sync held changes back for you to review | default (3) |
 | Any of the above recovering | low (2) |

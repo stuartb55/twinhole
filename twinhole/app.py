@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -227,8 +227,12 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, bool]:
-        return {"ok": True}
+    async def healthz() -> JSONResponse:
+        # Unhealthy when the checks have stopped running, so Docker's health check notices a stuck loop.
+        t = th()
+        if background and t.monitor.stalled():
+            return JSONResponse({"ok": False, "error": "health checks have stopped running"}, status_code=503)
+        return JSONResponse({"ok": True})
 
     @app.get("/api/status")
     async def status() -> dict[str, Any]:

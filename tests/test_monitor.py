@@ -1,7 +1,9 @@
+import httpx
 import pytest
 
-from twinhole.alerts import AlertManager
+from twinhole.alerts import LOW, AlertManager
 from twinhole.monitor import Monitor, pick_ipv6
+from twinhole.pihole import Pihole
 
 pytestmark = pytest.mark.anyio
 
@@ -191,3 +193,36 @@ async def test_recovered_urgent_alerts_become_the_last_outage(
     outage = store.last_past_alert("192.168.1.118", 5)
     assert outage["title"] == "Main is unreachable"
     assert outage["until"] - outage["since"] == 60
+
+
+async def test_pihole_update_sends_one_low_priority_notice(
+    settings, main, secondary, main_fake, store, notifier, fake_dns, clock, monkeypatch
+):
+    real = main_fake.handle
+
+    def newer(request):
+        if request.url.path == "/api/info/version":
+            v = {"local": {"version": "v6.5"}, "remote": {"version": "v6.6"}}
+            same = {"local": {"version": "v6.5"}, "remote": {"version": "v6.5"}}
+            return httpx.Response(200, json={"version": {"core": v, "web": same, "ftl": same}})
+        return real(request)
+
+    monkeypatch.setattr(main_fake, "handle", newer)
+    main = Pihole(settings.main, transport=main_fake.transport)
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    clock.advance(600)
+    await mon.run_cycle()
+    assert [(m["title"], m["priority"]) for m in notifier.sent] == [("Main has a Pi-hole update", LOW)]
+    assert "Core v6.5 → v6.6" in notifier.sent[0]["message"]
+
+
+async def test_stalled_when_no_cycle_finishes(settings, main, secondary, store, notifier, fake_dns, clock):
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    assert not mon.stalled()
+    clock.advance(200)
+    assert mon.stalled()  # never finished a cycle
+    await mon.run_cycle()
+    assert not mon.stalled()
+    clock.advance(121)
+    assert mon.stalled()
