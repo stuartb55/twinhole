@@ -228,7 +228,7 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
             "writes": settings.allow_writes,
             "piholes": [t.monitor.status[p.id] for p in t.piholes],
             "alerts": sorted(t.alerts.active.values(), key=lambda a: a["since"]),
-            "sync": {k: last[k] for k in ("checked", "summary", "error")} | {"count": len(last["changes"])},
+            "sync": {k: last[k] for k in ("checked", "summary", "error", "auto")} | {"count": len(last["changes"])},
             "gravity": t.gravity.status(),
             "check_interval": settings.check_interval,
         }

@@ -14,7 +14,7 @@ Pi-hole v6 instances, in a single container with a web dashboard.
 - **Sync:** main → secondary for groups, domains, adlists, clients, local DNS and
   CNAMEs. You preview the changes, then Apply. The secondary becomes an exact mirror,
   and group membership is matched by group name. Gravity rebuilds on the secondary
-  when adlists change.
+  when adlists change. With [auto-sync](#auto-sync) on, it applies the changes itself.
 - **Manage:** edit domains, adlists, local DNS, CNAMEs, clients and groups. Each
   change goes to the main Pi-hole first, then the secondary.
 - **Actions:** pause or enable blocking (one or both Pi-holes) and run gravity, with
@@ -29,6 +29,7 @@ Pi-hole v6 instances, in a single container with a web dashboard.
 | Blocking off for more than 10 min | default (3) |
 | Gravity older than 8 days | default (3) |
 | Secondary out of sync with main for more than 1 h | default (3) |
+| Auto-sync held changes back for you to review | default (3) |
 | Any of the above recovering | low (2) |
 
 ## Running it
@@ -134,6 +135,7 @@ required.
 | `NTFY_URL`, `NTFY_TOPIC` | (none) | ntfy server and topic for alerts; leave empty for no alerts |
 | `NTFY_TOKEN` | (none) | Access token, if your ntfy server needs one to publish |
 | `ALLOW_WRITES` | `false` | See [read-only mode](#read-only-mode) |
+| `AUTO_SYNC` | `false` | See [auto-sync](#auto-sync) |
 | `TZ` | `Europe/London` | Time zone for daily history and charts |
 
 The rest (check intervals, alert thresholds, history retention) are tuning knobs
@@ -145,6 +147,15 @@ container after changing `.env`.
 `ALLOW_WRITES=false` (the default) keeps monitoring, history and the sync preview
 working, but refuses Apply, edits, blocking changes and gravity runs. Set it to
 `true` and restart (`docker compose up -d`) to enable them.
+
+### Auto-sync
+
+`AUTO_SYNC=true` (with `ALLOW_WRITES=true`) makes the background check, every 15
+minutes, apply any differences to the secondary itself, as if you'd pressed Apply. It
+won't when that looks risky. If a change would delete more than
+`AUTO_SYNC_MAX_DELETES` items (default 5), remove an adlist, or copy a main Pi-hole
+that looks empty, it leaves everything as it is, sends an alert, and waits for you to
+review it on the Sync page. If either Pi-hole can't be read, it does nothing.
 
 ## Things worth knowing
 
