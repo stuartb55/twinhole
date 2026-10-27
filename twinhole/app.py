@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import config, devices, dnsprobe
 from .alerts import URGENT, AlertManager, NoNotifier, Notifier, Ntfy
 from .history import History
-from .monitor import Monitor, Probe
+from .monitor import Monitor, Probe, VersionQuery
 from .pihole import Pihole, PiholeError
 from .services import Editor, GravityRunner, PlanChanged, SyncService
 from .store import DAY, Store
@@ -50,6 +50,7 @@ class Twinhole:
         probe: Probe = dnsprobe.probe,
         notifier: Notifier | None = None,
         clock: Callable[[], float] = time.time,
+        version_query: VersionQuery = dnsprobe.server_version,
     ):
         transports = transports or {}
         self.settings = settings
@@ -65,7 +66,7 @@ class Twinhole:
                 notifier = NoNotifier()
         self.notifier = notifier
         self.alerts = AlertManager(self.store, notifier, clock)
-        self.monitor = Monitor(settings, self.piholes, self.alerts, probe, clock)
+        self.monitor = Monitor(settings, self.piholes, self.alerts, probe, clock, version_query)
         self.history = History(settings, self.piholes, self.store, clock)
         self.gravity = GravityRunner(self.store)
         self.sync = SyncService(settings, self.main, self.secondary, self.store, self.alerts, self.gravity)

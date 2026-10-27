@@ -180,6 +180,22 @@ review it on the Sync page. If either Pi-hole can't be read, it does nothing.
 - **The recursion check looks up names like `twinhole-1a2b3c4d.example.com`**, one per
   Pi-hole every 5 minutes, so they appear in the query log too. NXDOMAIN is the
   expected answer.
+- **To show the Unbound version, Unbound must answer on the LAN.** Every 10 minutes
+  twinhole sends a `version.server` CHAOS query to each Pi-hole's address, on the port
+  of any upstream that runs on the Pi-hole itself (`127.0.0.1#5335`, say). Pi-hole won't
+  pass the question on, and Unbound usually listens on 127.0.0.1 only, so the card shows
+  "not readable" until you add something like this to Unbound's config on each Pi
+  (often `/etc/unbound/unbound.conf.d/pi-hole.conf`) and restart it:
+
+  ```
+  server:
+      interface: 127.0.0.1                    # keep this one, Pi-hole uses it
+      interface: 192.168.1.118                # add the Pi's own LAN address
+      access-control: 192.168.1.50/32 allow   # the machine running twinhole
+      hide-version: no                        # the default, unless set to yes
+  ```
+
+  Unbound still refuses everyone else, since that's its default.
 - **The DNS check queries `example.com`** (or `DNS_PROBE_DOMAIN`) through each
   Pi-hole every 30 s, so those lookups appear in the query log, coming from the
   machine running twinhole.

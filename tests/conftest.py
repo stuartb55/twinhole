@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from twinhole import config
-from twinhole.dnsprobe import ProbeResult
+from twinhole.dnsprobe import ProbeResult, VersionResult
 from twinhole.pihole import Pihole
 from twinhole.store import Store
 
@@ -99,6 +99,15 @@ class FakeDNS:
         self.no_dnssec: set[str] = set()
         self.asked: list[str] = []
         self.domains: list[str] = []
+        # What version.server queries get back, by "host#port"; anything else times out,
+        # like an Unbound that only listens on 127.0.0.1.
+        self.versions: dict[str, str] = {}
+        self.version_asked: list[str] = []
+
+    async def version(self, server, port, timeout):
+        self.version_asked.append(f"{server}#{port}")
+        v = self.versions.get(f"{server}#{port}")
+        return VersionResult(server, v or None, None if v else "no answer")
 
     async def __call__(self, server, port, domain, timeout):
         self.asked.append(server)

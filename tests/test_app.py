@@ -15,7 +15,7 @@ def make_client(settings, fakes, notifier, fake_dns):
             replace(settings, **overrides),
             background=False,
             transports={pid: f.transport for pid, f in fakes.items()},
-            probe=fake_dns,
+            probe=fake_dns, version_query=fake_dns.version,
             notifier=notifier,
         )
         client = TestClient(app)

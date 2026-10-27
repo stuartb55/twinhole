@@ -51,3 +51,31 @@ async def _address(server: str) -> str:
     except ValueError:
         infos = await asyncio.get_running_loop().getaddrinfo(server, None, type=socket.SOCK_DGRAM)
         return infos[0][4][0]
+
+
+@dataclass(frozen=True)
+class VersionResult:
+    server: str
+    version: str | None
+    error: str | None = None
+
+
+async def server_version(server: str, port: int, timeout: float) -> VersionResult:
+    """Ask a DNS server its version with a CHAOS TXT version.server query, which Unbound
+    answers unless `hide-version: yes` is set."""
+    query = dns.message.make_query("version.server", "TXT", "CH")
+    try:
+        address = await _address(server)
+        reply = await dns.asyncquery.udp(query, address, timeout=timeout, port=port)
+    except dns.exception.Timeout:
+        return VersionResult(server, None, "no answer")
+    except (OSError, dns.exception.DNSException) as e:
+        return VersionResult(server, None, str(e) or type(e).__name__)
+    if reply.rcode() != dns.rcode.NOERROR:
+        return VersionResult(server, None, f"answered {dns.rcode.to_text(reply.rcode())}")
+    for rrset in reply.answer:
+        for rdata in rrset:
+            text = b"".join(getattr(rdata, "strings", ())).decode(errors="replace").strip()
+            if text:
+                return VersionResult(server, text)
+    return VersionResult(server, None, "version hidden")

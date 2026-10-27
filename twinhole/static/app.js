@@ -215,6 +215,16 @@ function versionsCell(p, other) {
   return parts.join(" · ") + (updates.length ? ` <span class="pill warn" title="${esc(updates.map((k) => `${k}: ${p.versions[k].remote}`).join(", "))}">update available</span>` : "");
 }
 
+function resolverVersionCell(p, other) {
+  const v = p.resolver?.version;
+  if (!v) return `<span class="muted">–</span>`;
+  if (!v.version) {
+    return `<span class="muted" title="twinhole asks ${esc(v.server)} for its version. Unbound has to listen on the Pi-hole's LAN address and allow twinhole's address; see the README.">not readable (${esc(v.error || "no answer")})</span>`;
+  }
+  const differs = other?.resolver?.version?.version && other.resolver.version.version !== v.version;
+  return `<span title="${differs ? "Differs from the other Pi-hole" : ""}" style="${differs ? "color:var(--warn);font-weight:600" : ""}">${esc(v.name ? `${v.name} ${v.version}` : v.version)}</span> <span class="muted mono">${esc(v.server)}</span>`;
+}
+
 function piholeCard(p, other) {
   const [level, label] = health(p);
   const s = p.summary || {};
@@ -249,6 +259,7 @@ function piholeCard(p, other) {
       <dt>Blocking</dt><dd>${blocking}</dd>
       <dt>Gravity</dt><dd>${gAge == null ? "–" : `<span class="dot ${gAge > 8 ? "warn" : "ok"}"></span>updated ${fmt.ago(g.last_update)} · ${fmt.num(g.domains_being_blocked)} domains`}</dd>
       <dt>Versions</dt><dd>${versionsCell(p, other)}</dd>
+      <dt>Resolver</dt><dd>${resolverVersionCell(p, other)}</dd>
     </dl>
   </section>`;
 }
