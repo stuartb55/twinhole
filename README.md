@@ -195,7 +195,9 @@ review it on the Sync page. If either Pi-hole can't be read, it does nothing.
       hide-version: no                        # the default, unless set to yes
   ```
 
-  Unbound still refuses everyone else, since that's its default.
+  Unbound still refuses everyone else, since that's its default. If twinhole runs in
+  Docker on one of the Pi-holes, that Pi's Unbound sees its queries coming from Docker's
+  own network, so add `access-control: 172.16.0.0/12 allow` there too.
 - **The DNS check queries `example.com`** (or `DNS_PROBE_DOMAIN`) through each
   Pi-hole every 30 s, so those lookups appear in the query log, coming from the
   machine running twinhole.
