@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 SLOW_REFRESH = 600  # versions and the IPv6 address change rarely
 
 Probe = Callable[[str, int, str, float], Awaitable[dnsprobe.ProbeResult]]
+VersionQuery = Callable[[str, int, float], Awaitable[dnsprobe.VersionResult]]
 
 
 def pick_ipv6(interfaces: list[dict[str, Any]], ipv4: str) -> str | None:
@@ -67,6 +68,31 @@ def _upstreams(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(out, key=lambda u: -u["count"])
 
 
+def _local_resolver_ports(raw: list[dict[str, Any]], host: str) -> list[int]:
+    """Ports of upstreams on the Pi-hole's own machine (127.0.0.1#5335, say), busiest first.
+    twinhole can only reach them at the Pi-hole's own address."""
+    ports = []
+    for u in sorted(raw, key=lambda u: -(u.get("count") or 0)):
+        port = u.get("port") or -1
+        try:
+            local = ipaddress.ip_address(u.get("ip") or "").is_loopback or u.get("ip") == host
+        except ValueError:
+            local = u.get("ip") == host
+        if port > 0 and local and port not in ports:
+            ports.append(port)
+    return ports
+
+
+def _resolver_version(r: dnsprobe.VersionResult, port: int, now: float) -> dict[str, Any]:
+    name, version = None, r.version
+    if version:
+        # Unbound answers "unbound 1.22.0"; keep anything else as it came.
+        first, _, rest = version.partition(" ")
+        if rest and first.lower() == "unbound":
+            name, version = "Unbound", rest
+    return {"name": name, "version": version, "server": f"{r.server}#{port}", "error": r.error, "checked": int(now)}
+
+
 def _versions(raw: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for part in ("core", "web", "ftl"):
@@ -85,12 +111,15 @@ class Monitor:
         alerts: AlertManager,
         probe: Probe = dnsprobe.probe,
         clock: Callable[[], float] = time.time,
+        version_query: VersionQuery = dnsprobe.server_version,
     ):
         self.settings = settings
         self.piholes = piholes
         self.alerts = alerts
         self.probe = probe
         self.clock = clock
+        self.version_query = version_query
+        self._resolver_ports: dict[str, list[int]] = {}
         self._slow_due: dict[str, float] = {}
         self._recursion_due: dict[str, float] = {}
         self._dnssec_due: dict[str, float] = {}
@@ -111,7 +140,7 @@ class Monitor:
                 "gravity": None,
                 "summary": None,
                 "versions": None,
-                "resolver": {"recursion": None, "dnssec": None, "upstreams": None},
+                "resolver": {"recursion": None, "dnssec": None, "upstreams": None, "version": None},
             }
             for p in piholes
         }
@@ -145,7 +174,9 @@ class Monitor:
             api_error = e.message
         if api_error is None:
             try:
-                st["resolver"]["upstreams"] = _upstreams(await p.upstreams())
+                raw = await p.upstreams()
+                st["resolver"]["upstreams"] = _upstreams(raw)
+                self._resolver_ports[p.id] = _local_resolver_ports(raw, p.cfg.dns_host)
             except PiholeError as e:
                 log.info("upstream stats failed for %s: %s", p.name, e)
 
@@ -245,11 +276,24 @@ class Monitor:
                 detail=", ".join(updates) + ". Update it with `pihole -up` (or pull a new image).",
                 priority=LOW, recovered_detail="Up to date",
             )
+        await self._resolver_version(p, st)
         if p.cfg.ipv6 == "auto":
             try:
                 self._ipv6[p.id] = pick_ipv6(await p.interfaces(), p.cfg.dns_host)
             except PiholeError as e:
                 log.info("interface lookup failed for %s: %s", p.name, e)
+
+    async def _resolver_version(self, p: Pihole, st: dict[str, Any]) -> None:
+        """Ask the resolver on the Pi-hole's machine (Unbound, say) for its version. It has to
+        listen on the Pi-hole's LAN address for this to work; on 127.0.0.1 only, it can't be reached."""
+        ports = self._resolver_ports.get(p.id) or []
+        result = None
+        for port in ports:
+            r = await self.version_query(p.cfg.dns_host, port, self.settings.dns_timeout)
+            result = _resolver_version(r, port, self.clock())
+            if r.version:
+                break
+        st["resolver"]["version"] = result
 
     async def _evaluate(self, p, now, api_error, r4, r6, summary, blocking) -> None:
         s, a, name = self.settings, self.alerts, p.name

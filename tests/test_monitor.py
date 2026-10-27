@@ -27,7 +27,7 @@ def test_pick_ipv6_prefers_stable_global_address_on_the_lan_interface():
 
 
 def make(settings, main, secondary, store, notifier, fake_dns, clock):
-    return Monitor(settings, [main, secondary], AlertManager(store, notifier, clock), fake_dns, clock)
+    return Monitor(settings, [main, secondary], AlertManager(store, notifier, clock), fake_dns, clock, fake_dns.version)
 
 
 async def test_healthy_cycle_checks_ipv4_and_ipv6_and_records_status(
@@ -226,3 +226,35 @@ async def test_stalled_when_no_cycle_finishes(settings, main, secondary, store, 
     assert not mon.stalled()
     clock.advance(121)
     assert mon.stalled()
+
+
+async def test_resolver_version_is_asked_of_the_pihole_host_on_the_local_upstream_port(
+    settings, main, secondary, sec_fake, store, notifier, fake_dns, clock
+):
+    sec_fake.upstreams.append({"ip": "192.168.1.1", "name": "router", "port": 53, "count": 5,
+                               "statistics": {"response": 0.005, "variance": 0}})
+    fake_dns.versions = {"192.168.1.118#5335": "unbound 1.22.0"}
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    # The router isn't on the Pi-hole's machine, so it isn't asked.
+    assert sorted(fake_dns.version_asked) == ["192.168.1.118#5335", "192.168.1.33#5335"]
+    v = mon.status["192.168.1.118"]["resolver"]["version"]
+    assert (v["name"], v["version"], v["server"], v["error"]) == ("Unbound", "1.22.0", "192.168.1.118#5335", None)
+    v = mon.status["192.168.1.33"]["resolver"]["version"]
+    assert v["version"] is None and v["error"] == "no answer"
+
+    # Asked again only with the other slow checks.
+    clock.advance(30)
+    await mon.run_cycle()
+    assert len(fake_dns.version_asked) == 2
+
+
+async def test_no_resolver_version_without_a_local_upstream(
+    settings, main, secondary, main_fake, store, notifier, fake_dns, clock
+):
+    main_fake.upstreams = [{"ip": "1.1.1.1", "name": "one.one.one.one", "port": 53, "count": 9,
+                            "statistics": {"response": 0.01, "variance": 0}}]
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    assert mon.status["192.168.1.118"]["resolver"]["version"] is None
+    assert fake_dns.version_asked == ["192.168.1.33#5335"]
