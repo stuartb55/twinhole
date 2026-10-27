@@ -1,7 +1,10 @@
 """Every device either Pi-hole has seen, merged by hardware address.
 
 Pi-hole keeps a network table of devices (MAC, vendor, IPs, names, query counts).
-Devices without a known MAC appear as "ip-<address>". Client entries (which put a
+Devices without a known MAC appear as "ip-<address>"; when that address also
+belongs to a device with a MAC, the two rows are folded together. Pi-hole also
+lists every neighbour it sees on the network (ARP/NDP), including ones that have
+never sent it a query, so each row says whether it is a DNS client at all. Client entries (which put a
 device into groups) are matched to devices by MAC, IP, host name or subnet.
 """
 
@@ -53,22 +56,52 @@ def merge(per_pihole: dict[str, list[dict[str, Any]]], now: float) -> list[dict[
                 if ip.get("name") and (ip.get("nameUpdated") or 0) > dev["_name"][1]:
                     dev["_name"] = (ip["name"], ip.get("nameUpdated") or 0)
 
+    _fold_ip_only_rows(found)
+
     out = []
     for dev in found.values():
         ips = [ip for ip, _ in sorted(dev.pop("_ips").items(), key=_ip_sort_key)]
         name = dev.pop("_name")[0]
-        recent = [pid for pid, q in dev["queries"].items() if now - q["last_query"] < ACTIVE_SECONDS]
+        recent = [pid for pid, q in dev["queries"].items()
+                  if q["count"] and now - q["last_query"] < ACTIVE_SECONDS]
+        total = sum(q["count"] for q in dev["queries"].values())
         out.append({
             **dev,
             "name": name,
             "ips": ips,
-            "total_queries": sum(q["count"] for q in dev["queries"].values()),
+            "total_queries": total,
+            # Only on the network table (seen via ARP/NDP): never asked either Pi-hole anything.
+            "silent": total == 0,
             "active": bool(recent),
             # Active, but only one of the two Pi-holes has heard from it lately.
             "only_uses": recent[0] if len(recent) == 1 and len(per_pihole) > 1 else None,
         })
     out.sort(key=lambda d: (not d["active"], -d["total_queries"]))
     return out
+
+
+def _fold_ip_only_rows(found: dict[str, dict[str, Any]]) -> None:
+    """Merge "ip-<address>" rows into the device with a MAC that owns the same address."""
+    owner = {ip: dev for dev in found.values() if dev["mac"] for ip in dev["_ips"]}
+    for key, dev in list(found.items()):
+        if dev["mac"]:
+            continue
+        target = next((owner[ip] for ip in dev["_ips"] if ip in owner), None)
+        if target is None:
+            continue
+        del found[key]
+        target["vendor"] = target["vendor"] or dev["vendor"]
+        if dev["first_seen"]:
+            target["first_seen"] = min(target["first_seen"] or dev["first_seen"], dev["first_seen"])
+        target["last_query"] = max(target["last_query"], dev["last_query"])
+        for pid, q in dev["queries"].items():
+            t = target["queries"].setdefault(pid, {"count": 0, "last_query": 0})
+            t["count"] += q["count"]
+            t["last_query"] = max(t["last_query"], q["last_query"])
+        for ip, seen in dev["_ips"].items():
+            target["_ips"][ip] = max(target["_ips"].get(ip, 0), seen)
+        if dev["_name"][1] > target["_name"][1]:
+            target["_name"] = dev["_name"]
 
 
 def match_clients(device: dict[str, Any], clients: list[dict[str, Any]], group_names: dict[int, str]) -> list[dict]:
