@@ -97,3 +97,27 @@ def test_devices_endpoint_still_works_when_one_pihole_is_down(client, main_fake,
     body = client.get("/api/devices").json()
     assert [d["id"] for d in body["devices"]] == ["aa:bb:cc:dd:ee:01"]
     assert len(body["errors"]) == 2  # devices and groups both come partly from the main Pi-hole
+
+
+def test_merge_marks_devices_that_never_queried_as_silent_and_inactive():
+    # Pi-hole lists neighbours it saw via ARP/NDP even if they never asked it anything,
+    # and may still stamp a recent lastQuery on them.
+    per = {"main": [dev("ip-fe80::7427:50ff:fe3f:d864", 0, ips=[ip("fe80::7427:50ff:fe3f:d864")]), dev("aa:aa:aa:aa:aa:01", 5)]}
+    rows = merge(per, NOW)
+    assert [(r["id"], r["silent"], r["active"]) for r in rows] == [
+        ("aa:aa:aa:aa:aa:01", False, True), ("ip-fe80::7427:50ff:fe3f:d864", True, False),
+    ]
+
+
+def test_merge_folds_ip_only_rows_into_the_device_with_that_address():
+    per = {
+        "main": [
+            dev("aa:aa:aa:aa:aa:01", 10, ips=[ip("192.168.1.5"), ip("fe80::1")]),
+            dev("ip-fe80::1", 3, last_query=NOW - 5, ips=[ip("fe80::1", "phone.lan", name_updated=9)]),
+        ],
+        "sec": [dev("ip-192.168.1.5", 4, ips=[ip("192.168.1.5")])],
+    }
+    [d] = merge(per, NOW)
+    assert d["id"] == "aa:aa:aa:aa:aa:01" and d["name"] == "phone.lan"
+    assert d["queries"] == {"main": {"count": 13, "last_query": NOW - 5}, "sec": {"count": 4, "last_query": NOW - 60}}
+    assert d["total_queries"] == 17 and not d["silent"]

@@ -71,7 +71,7 @@ const state = {
   manage: null,
   queries: null,
   queryFilter: { text: "", status: "all", pihole: "" },
-  deviceFilter: { text: "", scope: "active", unnamed: false, oneOnly: false },
+  deviceFilter: { text: "", scope: "active", unnamed: false, oneOnly: false, silent: false },
   target: "both",
 };
 
@@ -635,26 +635,29 @@ async function devices(el) {
     const text = f.text.toLowerCase();
     const rows = data.devices.filter((d) => {
       if (f.scope === "active" && !d.active) return false;
+      if (!f.silent && d.silent) return false;
       if (f.unnamed && d.name) return false;
       if (f.oneOnly && !d.only_uses) return false;
       return !text || [d.name, d.vendor, d.mac, ...d.ips].some((v) => (v || "").toLowerCase().includes(text));
     });
     const active = data.devices.filter((d) => d.active);
+    const silent = data.devices.filter((d) => d.silent).length;
     const off = writesOff() ? "disabled title='Read-only mode'" : "";
     const nameOf = (id) => pis.find((p) => p.id === id)?.name || id;
     el.innerHTML = `
       ${data.errors.map((e) => `<div class="banner warn">${esc(e)}</div>`).join("")}
       <section class="card">
         <div class="card-head"><h2>Devices</h2>
-          <span class="muted small">${active.length} active in the last 7 days · ${data.devices.length} ever seen · ${active.filter((d) => !d.name).length} active without a name · ${active.filter((d) => d.only_uses).length} using only one Pi-hole</span>
+          <span class="muted small">${active.length} active in the last 7 days · ${data.devices.length - silent} ever seen · ${active.filter((d) => !d.name).length} active without a name · ${active.filter((d) => d.only_uses).length} using only one Pi-hole${silent ? ` · ${silent} on the network but never queried` : ""}</span>
           <div class="right">
             <input type="search" id="dtext" placeholder="Name, vendor, MAC or IP" value="${esc(f.text)}">
             ${seg("dscope", [["active", "Active (7 days)"], ["all", "All"]], f.scope)}
             <label class="small"><input type="checkbox" id="dunnamed" ${f.unnamed ? "checked" : ""}> No name</label>
             <label class="small"><input type="checkbox" id="doneonly" ${f.oneOnly ? "checked" : ""}> One Pi-hole only</label>
+            <label class="small" title="Addresses the Pi-holes saw on the network (ARP/NDP) that never sent them a query, such as IPv6 link-local addresses"><input type="checkbox" id="dsilent" ${f.silent ? "checked" : ""}> Never queried</label>
           </div>
         </div>
-        <p class="small muted" style="margin-top:-4px">Every device either Pi-hole has seen, matched up by MAC address. Devices are in the Default group unless you assign them to others.</p>
+        <p class="small muted" style="margin-top:-4px">Every device that has sent either Pi-hole a query, matched up by MAC address. Devices are in the Default group unless you assign them to others.</p>
         ${!rows.length ? `<p class="empty">No matching devices</p>` : `<div class="table-wrap"><table>
           <thead><tr><th>Device</th><th>Vendor</th><th>Address</th><th>Last query</th>
             ${pis.map((p) => `<th class="num">${chip(p.id)}</th>`).join("")}<th>Groups</th><th></th></tr></thead>
@@ -687,6 +690,7 @@ async function devices(el) {
     };
     $("#dunnamed").onchange = (e) => { f.unnamed = e.target.checked; draw(); };
     $("#doneonly").onchange = (e) => { f.oneOnly = e.target.checked; draw(); };
+    $("#dsilent").onchange = (e) => { f.silent = e.target.checked; draw(); };
     const form = $("form[data-device]");
     if (form) form.onsubmit = save;
   };
