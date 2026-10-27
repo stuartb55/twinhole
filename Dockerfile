@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Dependencies come straight from uv.lock, which pins every package by hash.
 # --locked fails the build if uv.lock is out of date with pyproject.toml.
 FROM base AS deps
-COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
 ENV UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy \
     UV_NO_CACHE=1
