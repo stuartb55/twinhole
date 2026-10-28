@@ -80,6 +80,14 @@ def merge(per_pihole: dict[str, list[dict[str, Any]]], now: float) -> list[dict[
     return out
 
 
+def count_active(devices: list[dict[str, Any]], now: float, window: float = 86400) -> int:
+    """Devices in one Pi-hole's network table that queried it within `window` seconds.
+    Unlike Pi-hole's own active-clients figure, a device's IPv4 address and its many
+    IPv6 addresses count once."""
+    rows = merge({"p": devices}, now)
+    return sum(1 for d in rows if not d["silent"] and now - d["queries"]["p"]["last_query"] < window)
+
+
 def _fold_ip_only_rows(found: dict[str, dict[str, Any]]) -> None:
     """Merge "ip-<address>" rows into the device with a MAC that owns the same address."""
     owner = {ip: dev for dev in found.values() if dev["mac"] for ip in dev["_ips"]}

@@ -244,7 +244,7 @@ function piholeCard(p, other) {
     <div class="stats">
       <div class="stat"><b>${fmt.num(s.total)}</b><span>queries (24h)</span></div>
       <div class="stat"><b>${fmt.pct(s.percent_blocked)}</b><span>blocked</span></div>
-      <div class="stat"><b>${fmt.num(s.clients_active)}</b><span>active clients</span></div>
+      <div class="stat"><b>${fmt.num(s.clients_active)}</b><span title="Devices that queried this Pi-hole in the last 24 hours, each counted once however many addresses it uses">active devices</span></div>
     </div>
     <dl class="kv">
       <dt>Uptime</dt><dd>${uptimeCell(p)}</dd>
