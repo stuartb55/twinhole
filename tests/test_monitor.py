@@ -258,3 +258,17 @@ async def test_no_resolver_version_without_a_local_upstream(
     await mon.run_cycle()
     assert mon.status["192.168.1.118"]["resolver"]["version"] is None
     assert fake_dns.version_asked == ["192.168.1.33#5335"]
+
+
+async def test_active_clients_counts_devices_not_addresses(
+    settings, main, secondary, main_fake, store, notifier, fake_dns, clock
+):
+    now = clock()
+    main_fake.devices = [{
+        "hwaddr": "aa:aa:aa:aa:aa:01", "numQueries": 40, "lastQuery": now - 60,
+        "ips": [{"ip": "192.168.1.5"}, {"ip": "2a00::5"}, {"ip": "2a00::6"}],
+    }]
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    assert mon.status["192.168.1.118"]["summary"]["clients_active"] == 1
+    assert mon.status["192.168.1.33"]["summary"]["clients_active"] == 0

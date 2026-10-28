@@ -15,7 +15,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from . import dnsprobe
+from . import devices, dnsprobe
 from .alerts import DEFAULT, LOW, URGENT, AlertManager
 from .config import Settings
 from .pihole import Pihole, PiholeError
@@ -23,6 +23,7 @@ from .pihole import Pihole, PiholeError
 log = logging.getLogger(__name__)
 
 SLOW_REFRESH = 600  # versions and the IPv6 address change rarely
+DEVICE_REFRESH = 300  # the network table is a bigger read than the summary
 
 Probe = Callable[[str, int, str, float], Awaitable[dnsprobe.ProbeResult]]
 VersionQuery = Callable[[str, int, float], Awaitable[dnsprobe.VersionResult]]
@@ -123,6 +124,8 @@ class Monitor:
         self._slow_due: dict[str, float] = {}
         self._recursion_due: dict[str, float] = {}
         self._dnssec_due: dict[str, float] = {}
+        self._devices_due: dict[str, float] = {}
+        self._active_devices: dict[str, int] = {}
         self._ipv6: dict[str, str | None] = {}
         self.started = clock()
         self.last_cycle: float | None = None
@@ -180,6 +183,12 @@ class Monitor:
             except PiholeError as e:
                 log.info("upstream stats failed for %s: %s", p.name, e)
 
+        if api_error is None and self._due(self._devices_due, p, now, DEVICE_REFRESH):
+            try:
+                self._active_devices[p.id] = devices.count_active(await p.network_devices(), now)
+            except PiholeError as e:
+                log.info("device list failed for %s: %s", p.name, e)
+
         if api_error is None and now >= self._slow_due.get(p.id, 0):
             await self._slow_refresh(p, st)
             self._slow_due[p.id] = now + SLOW_REFRESH
@@ -203,7 +212,9 @@ class Monitor:
                 "percent_blocked": q.get("percent_blocked"),
                 "cached": q.get("cached"),
                 "forwarded": q.get("forwarded"),
-                "clients_active": (summary.get("clients") or {}).get("active"),
+                # Pi-hole counts every address as a client; its figure is only used until
+                # the device count has been read.
+                "clients_active": self._active_devices.get(p.id, (summary.get("clients") or {}).get("active")),
             }
             st["gravity"] = summary.get("gravity")
             st["blocking"] = blocking.get("blocking")

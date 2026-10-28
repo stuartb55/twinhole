@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from twinhole.app import create_app
-from twinhole.devices import match_clients, merge
+from twinhole.devices import count_active, match_clients, merge
 
 NOW = 1_792_500_000
 DAY = 86400
@@ -121,3 +121,14 @@ def test_merge_folds_ip_only_rows_into_the_device_with_that_address():
     assert d["id"] == "aa:aa:aa:aa:aa:01" and d["name"] == "phone.lan"
     assert d["queries"] == {"main": {"count": 13, "last_query": NOW - 5}, "sec": {"count": 4, "last_query": NOW - 60}}
     assert d["total_queries"] == 17 and not d["silent"]
+
+
+def test_count_active_counts_each_device_once_within_a_day():
+    devices = [
+        dev("aa:aa:aa:aa:aa:01", 50, ips=[ip("192.168.1.5"), ip("2a00::5"), ip("2a00::6"), ip("fe80::5")]),
+        dev("ip-2a00::5", 9, ips=[ip("2a00::5")]),  # same phone, before Pi-hole learnt its MAC
+        dev("aa:aa:aa:aa:aa:02", 8, last_query=NOW - 2 * DAY),  # not today
+        dev("aa:aa:aa:aa:aa:03", 0),  # only seen on the network
+        dev("ip-100.64.0.7", 3, ips=[ip("100.64.0.7")]),  # over Tailscale, no MAC
+    ]
+    assert count_active(devices, NOW) == 2
