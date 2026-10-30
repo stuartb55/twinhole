@@ -198,6 +198,11 @@ review it on the Sync page. If either Pi-hole can't be read, it does nothing.
   Unbound still refuses everyone else, since that's its default. If twinhole runs in
   Docker on one of the Pi-holes, that Pi's Unbound sees its queries coming from Docker's
   own network, so add `access-control: 172.16.0.0/12 allow` there too.
+- **Once a day twinhole asks GitHub for the latest Unbound release**
+  (`api.github.com/repos/NLnetLabs/unbound/releases/latest`) and marks the Resolver
+  row "update available" when a Pi's Unbound is older. It's only shown on the card,
+  not sent as an alert, since distro packages often lag the upstream release. Set
+  `CHECK_RELEASES=false` to turn the lookup off.
 - **The DNS check queries `example.com`** (or `DNS_PROBE_DOMAIN`) through each
   Pi-hole every 30 s, so those lookups appear in the query log, coming from the
   machine running twinhole.

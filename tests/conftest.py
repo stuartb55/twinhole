@@ -103,6 +103,15 @@ class FakeDNS:
         # like an Unbound that only listens on 127.0.0.1.
         self.versions: dict[str, str] = {}
         self.version_asked: list[str] = []
+        # The latest Unbound release on GitHub; an exception is raised as if the lookup failed.
+        self.unbound_release: str | Exception = "1.22.0"
+        self.release_asked = 0
+
+    async def latest_unbound(self):
+        self.release_asked += 1
+        if isinstance(self.unbound_release, Exception):
+            raise self.unbound_release
+        return self.unbound_release
 
     async def version(self, server, port, timeout):
         self.version_asked.append(f"{server}#{port}")

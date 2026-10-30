@@ -42,6 +42,7 @@ class Settings:
     drift_grace: int = 60 * 60
     auto_sync: bool = False
     auto_sync_max_deletes: int = 5
+    check_releases: bool = True
     retention_days: int = 730
     backfill_days: int = 92
     query_log_size: int = 500
@@ -119,6 +120,7 @@ def load(env: Mapping[str, str] = os.environ) -> Settings:
         drift_grace=_int(env, "DRIFT_GRACE_MIN", 60) * 60,
         auto_sync=_bool(env, "AUTO_SYNC"),
         auto_sync_max_deletes=_int(env, "AUTO_SYNC_MAX_DELETES", 5),
+        check_releases=env.get("CHECK_RELEASES", "").strip().lower() not in ("0", "false", "no"),
         retention_days=_int(env, "RETENTION_DAYS", 730),
         backfill_days=_int(env, "BACKFILL_DAYS", 92),
         query_log_size=_int(env, "QUERY_LOG_SIZE", 500),
