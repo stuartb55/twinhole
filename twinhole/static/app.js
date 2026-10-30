@@ -222,7 +222,8 @@ function resolverVersionCell(p, other) {
     return `<span class="muted" title="twinhole asks ${esc(v.server)} for its version. Unbound has to listen on the Pi-hole's LAN address and allow twinhole's address; see the README.">not readable (${esc(v.error || "no answer")})</span>`;
   }
   const differs = other?.resolver?.version?.version && other.resolver.version.version !== v.version;
-  return `<span title="${differs ? "Differs from the other Pi-hole" : ""}" style="${differs ? "color:var(--warn);font-weight:600" : ""}">${esc(v.name ? `${v.name} ${v.version}` : v.version)}</span> <span class="muted mono">${esc(v.server)}</span>`;
+  const update = v.update ? ` <span class="pill warn" title="${esc(`Latest Unbound release: ${v.latest}`)}">update available</span>` : "";
+  return `<span title="${differs ? "Differs from the other Pi-hole" : ""}" style="${differs ? "color:var(--warn);font-weight:600" : ""}">${esc(v.name ? `${v.name} ${v.version}` : v.version)}</span>${update} <span class="muted mono">${esc(v.server)}</span>`;
 }
 
 function piholeCard(p, other) {

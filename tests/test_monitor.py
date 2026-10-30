@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import httpx
 import pytest
 
@@ -27,7 +29,7 @@ def test_pick_ipv6_prefers_stable_global_address_on_the_lan_interface():
 
 
 def make(settings, main, secondary, store, notifier, fake_dns, clock):
-    return Monitor(settings, [main, secondary], AlertManager(store, notifier, clock), fake_dns, clock, fake_dns.version)
+    return Monitor(settings, [main, secondary], AlertManager(store, notifier, clock), fake_dns, clock, fake_dns.version, fake_dns.latest_unbound)
 
 
 async def test_healthy_cycle_checks_ipv4_and_ipv6_and_records_status(
@@ -272,3 +274,56 @@ async def test_active_clients_counts_devices_not_addresses(
     await mon.run_cycle()
     assert mon.status["192.168.1.118"]["summary"]["clients_active"] == 1
     assert mon.status["192.168.1.33"]["summary"]["clients_active"] == 0
+
+
+async def test_unbound_update_is_flagged_against_the_latest_release(
+    settings, main, secondary, store, notifier, fake_dns, clock
+):
+    fake_dns.versions = {"192.168.1.118#5335": "unbound 1.24.2", "192.168.1.33#5335": "unbound 1.22.0"}
+    fake_dns.unbound_release = "1.24.2"
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    main_v = mon.status["192.168.1.118"]["resolver"]["version"]
+    sec_v = mon.status["192.168.1.33"]["resolver"]["version"]
+    assert (main_v["latest"], main_v["update"]) == ("1.24.2", False)
+    assert (sec_v["latest"], sec_v["update"]) == ("1.24.2", True)
+    assert fake_dns.release_asked == 1  # shared by both Pi-holes
+
+    # Still cached at the next slow refresh; asked again after a day.
+    clock.advance(600)
+    await mon.run_cycle()
+    assert fake_dns.release_asked == 1
+    clock.advance(86400)
+    await mon.run_cycle()
+    assert fake_dns.release_asked == 2
+
+
+async def test_failed_release_lookup_keeps_the_last_answer_and_retries_sooner(
+    settings, main, secondary, store, notifier, fake_dns, clock
+):
+    fake_dns.versions = {"192.168.1.33#5335": "unbound 1.22.0"}
+    fake_dns.unbound_release = RuntimeError("rate limited")
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    v = mon.status["192.168.1.33"]["resolver"]["version"]
+    assert (v["version"], v["latest"], v["update"]) == ("1.22.0", None, False)
+
+    fake_dns.unbound_release = "1.24.2"
+    clock.advance(3600)
+    await mon.run_cycle()
+    assert mon.status["192.168.1.33"]["resolver"]["version"]["update"] is True
+
+    fake_dns.unbound_release = RuntimeError("down")
+    clock.advance(86400)
+    await mon.run_cycle()
+    assert mon.status["192.168.1.33"]["resolver"]["version"]["latest"] == "1.24.2"
+    assert not notifier.sent  # the Overview shows it; no ntfy nag for distro-packaged Unbound
+
+
+async def test_release_check_can_be_turned_off(settings, main, secondary, store, notifier, fake_dns, clock):
+    fake_dns.versions = {"192.168.1.33#5335": "unbound 1.22.0"}
+    fake_dns.unbound_release = "1.24.2"
+    mon = make(replace(settings, check_releases=False), main, secondary, store, notifier, fake_dns, clock)
+    await mon.run_cycle()
+    assert fake_dns.release_asked == 0
+    assert mon.status["192.168.1.33"]["resolver"]["version"]["update"] is False

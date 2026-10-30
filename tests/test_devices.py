@@ -72,7 +72,7 @@ def test_client_entries_match_by_mac_ip_name_and_subnet():
 def client(settings, fakes, notifier, fake_dns):
     app = create_app(
         settings, background=False, transports={pid: f.transport for pid, f in fakes.items()},
-        probe=fake_dns, version_query=fake_dns.version, notifier=notifier,
+        probe=fake_dns, version_query=fake_dns.version, latest_unbound=fake_dns.latest_unbound, notifier=notifier,
     )
     with TestClient(app) as c:
         yield c

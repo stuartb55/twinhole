@@ -15,7 +15,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from . import devices, dnsprobe
+from . import devices, dnsprobe, releases
 from .alerts import DEFAULT, LOW, URGENT, AlertManager
 from .config import Settings
 from .pihole import Pihole, PiholeError
@@ -24,9 +24,12 @@ log = logging.getLogger(__name__)
 
 SLOW_REFRESH = 600  # versions and the IPv6 address change rarely
 DEVICE_REFRESH = 300  # the network table is a bigger read than the summary
+RELEASE_REFRESH = 86400  # how often to ask GitHub for the latest Unbound release
+RELEASE_RETRY = 3600  # sooner if that failed
 
 Probe = Callable[[str, int, str, float], Awaitable[dnsprobe.ProbeResult]]
 VersionQuery = Callable[[str, int, float], Awaitable[dnsprobe.VersionResult]]
+LatestRelease = Callable[[], Awaitable[str]]
 
 
 def pick_ipv6(interfaces: list[dict[str, Any]], ipv4: str) -> str | None:
@@ -113,6 +116,7 @@ class Monitor:
         probe: Probe = dnsprobe.probe,
         clock: Callable[[], float] = time.time,
         version_query: VersionQuery = dnsprobe.server_version,
+        latest_unbound: LatestRelease = releases.latest_unbound,
     ):
         self.settings = settings
         self.piholes = piholes
@@ -120,6 +124,10 @@ class Monitor:
         self.probe = probe
         self.clock = clock
         self.version_query = version_query
+        self.latest_unbound = latest_unbound
+        self._unbound_latest: str | None = None
+        self._unbound_latest_due = 0.0
+        self._unbound_latest_lock = asyncio.Lock()
         self._resolver_ports: dict[str, list[int]] = {}
         self._slow_due: dict[str, float] = {}
         self._recursion_due: dict[str, float] = {}
@@ -304,7 +312,28 @@ class Monitor:
             result = _resolver_version(r, port, self.clock())
             if r.version:
                 break
+        if result and result["name"] == "Unbound":
+            latest = await self._latest_unbound()
+            local, newest = releases.parse_version(result["version"]), releases.parse_version(latest or "")
+            result["latest"] = latest
+            result["update"] = bool(local and newest and local < newest)
         st["resolver"]["version"] = result
+
+    async def _latest_unbound(self) -> str | None:
+        """The latest Unbound release, asked of GitHub once a day and shared by both Pi-holes.
+        A failed lookup keeps the last answer, so a GitHub hiccup doesn't hide the notice."""
+        if not self.settings.check_releases:
+            return None
+        async with self._unbound_latest_lock:
+            now = self.clock()
+            if now >= self._unbound_latest_due:
+                try:
+                    self._unbound_latest = await self.latest_unbound()
+                    self._unbound_latest_due = now + RELEASE_REFRESH
+                except Exception as e:
+                    log.info("latest Unbound release lookup failed: %s", e or type(e).__name__)
+                    self._unbound_latest_due = now + RELEASE_RETRY
+            return self._unbound_latest
 
     async def _evaluate(self, p, now, api_error, r4, r6, summary, blocking) -> None:
         s, a, name = self.settings, self.alerts, p.name

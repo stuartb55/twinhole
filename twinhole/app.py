@@ -17,10 +17,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, devices, dnsprobe
+from . import config, devices, dnsprobe, releases
 from .alerts import URGENT, AlertManager, NoNotifier, Notifier, Ntfy
 from .history import History
-from .monitor import Monitor, Probe, VersionQuery
+from .monitor import LatestRelease, Monitor, Probe, VersionQuery
 from .pihole import Pihole, PiholeError
 from .services import Editor, GravityRunner, PlanChanged, SyncService
 from .store import DAY, Store
@@ -51,6 +51,7 @@ class Twinhole:
         notifier: Notifier | None = None,
         clock: Callable[[], float] = time.time,
         version_query: VersionQuery = dnsprobe.server_version,
+        latest_unbound: LatestRelease = releases.latest_unbound,
     ):
         transports = transports or {}
         self.settings = settings
@@ -66,7 +67,7 @@ class Twinhole:
                 notifier = NoNotifier()
         self.notifier = notifier
         self.alerts = AlertManager(self.store, notifier, clock)
-        self.monitor = Monitor(settings, self.piholes, self.alerts, probe, clock, version_query)
+        self.monitor = Monitor(settings, self.piholes, self.alerts, probe, clock, version_query, latest_unbound)
         self.history = History(settings, self.piholes, self.store, clock)
         self.gravity = GravityRunner(self.store)
         self.sync = SyncService(settings, self.main, self.secondary, self.store, self.alerts, self.gravity)
