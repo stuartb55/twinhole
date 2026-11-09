@@ -26,6 +26,7 @@ SLOW_REFRESH = 600  # versions and the IPv6 address change rarely
 DEVICE_REFRESH = 300  # the network table is a bigger read than the summary
 RELEASE_REFRESH = 86400  # how often to ask GitHub for the latest Unbound release
 RELEASE_RETRY = 3600  # sooner if that failed
+EXPIRY_MARGIN = 2.0  # re-read blocking this long after a pause should have ended
 
 Probe = Callable[[str, int, str, float], Awaitable[dnsprobe.ProbeResult]]
 VersionQuery = Callable[[str, int, float], Awaitable[dnsprobe.VersionResult]]
@@ -135,6 +136,7 @@ class Monitor:
         self._devices_due: dict[str, float] = {}
         self._active_devices: dict[str, int] = {}
         self._ipv6: dict[str, str | None] = {}
+        self._expiry: dict[str, asyncio.Task] = {}
         self.started = clock()
         self.last_cycle: float | None = None
         self.status: dict[str, dict[str, Any]] = {
@@ -148,6 +150,7 @@ class Monitor:
                 "dns": {"v4": None, "v6": None},
                 "blocking": None,
                 "blocking_timer": None,
+                "blocking_until": None,
                 "gravity": None,
                 "summary": None,
                 "versions": None,
@@ -159,6 +162,40 @@ class Monitor:
     async def run_cycle(self) -> None:
         await asyncio.gather(*(self._check(p) for p in self.piholes))
         self.last_cycle = self.clock()
+
+    def stop(self) -> None:
+        for task in self._expiry.values():
+            task.cancel()
+        self._expiry.clear()
+
+    def _set_blocking(self, p: Pihole, blocking: dict[str, Any], now: float) -> None:
+        st = self.status[p.id]
+        timer = blocking.get("timer")
+        st["blocking"] = blocking.get("blocking")
+        st["blocking_timer"] = timer
+        st["blocking_until"] = int(now + timer) if timer else None
+        # A timed pause ends between checks; read the state again as soon as it should
+        # have ended, so the dashboard shows blocking back on without waiting a cycle.
+        old = self._expiry.pop(p.id, None)
+        if old and old is not asyncio.current_task():
+            old.cancel()
+        if timer:
+            self._expiry[p.id] = asyncio.create_task(self._recheck_blocking(p, timer + EXPIRY_MARGIN))
+
+    async def _recheck_blocking(self, p: Pihole, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if not await self.refresh_blocking(p) and self._expiry.get(p.id) is asyncio.current_task():
+            del self._expiry[p.id]
+
+    async def refresh_blocking(self, p: Pihole) -> bool:
+        """Read just the blocking state, e.g. right after it was changed or a pause ran out."""
+        try:
+            blocking = await p.blocking()
+        except PiholeError as e:
+            log.info("blocking re-read failed for %s: %s", p.name, e)
+            return False
+        self._set_blocking(p, blocking, self.clock())
+        return True
 
     def stalled(self) -> bool:
         """True when no check cycle has finished for a while, e.g. the loop is stuck."""
@@ -225,8 +262,7 @@ class Monitor:
                 "clients_active": self._active_devices.get(p.id, (summary.get("clients") or {}).get("active")),
             }
             st["gravity"] = summary.get("gravity")
-            st["blocking"] = blocking.get("blocking")
-            st["blocking_timer"] = blocking.get("timer")
+            self._set_blocking(p, blocking, now)
 
         await self._evaluate(p, now, api_error, r4, r6, summary, blocking)
         rec_ms = await self._check_resolver(p, now, r4)

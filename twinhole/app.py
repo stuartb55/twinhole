@@ -101,6 +101,7 @@ class Twinhole:
         tasks = [*self._tasks, *self._oneoffs]
         for t in tasks:
             t.cancel()
+        self.monitor.stop()
         await asyncio.gather(*tasks, return_exceptions=True)
         for p in self.piholes:
             await p.aclose()
@@ -422,6 +423,8 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
         what = "enabled" if body.enabled else (f"paused for {body.minutes} min" if body.minutes else "disabled")
         names = ", ".join(p.name for p in t.by_target(body.target))
         t.store.add_event("action", f"Blocking {what} on {names}")
+        # Read the new state straight back so the page shows it at once; the full check follows.
+        await asyncio.gather(*(t.monitor.refresh_blocking(p) for p in t.by_target(body.target)))
         t.spawn(t.monitor.run_cycle())
         return {"results": results}
 
