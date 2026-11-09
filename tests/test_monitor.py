@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 
 import httpx
@@ -327,3 +328,19 @@ async def test_release_check_can_be_turned_off(settings, main, secondary, store,
     await mon.run_cycle()
     assert fake_dns.release_asked == 0
     assert mon.status["192.168.1.33"]["resolver"]["version"]["update"] is False
+
+
+async def test_pause_ending_is_picked_up_without_waiting_a_cycle(
+    settings, main, secondary, main_fake, store, notifier, fake_dns, clock, monkeypatch
+):
+    monkeypatch.setattr("twinhole.monitor.EXPIRY_MARGIN", 0.0)
+    mon = make(settings, main, secondary, store, notifier, fake_dns, clock)
+    main_fake.blocking, main_fake.blocking_timer = "disabled", 0.05
+    await mon.run_cycle()
+    st = mon.status["192.168.1.118"]
+    assert st["blocking"] == "disabled"
+    assert st["blocking_until"] == int(clock() + 0.05)
+    main_fake.blocking, main_fake.blocking_timer = "enabled", None  # the pause runs out
+    await asyncio.sleep(0.2)
+    assert (st["blocking"], st["blocking_timer"], st["blocking_until"]) == ("enabled", None, None)
+    assert mon._expiry == {}

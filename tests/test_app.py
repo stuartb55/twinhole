@@ -141,6 +141,8 @@ def test_blocking_pause_on_one_pihole(make_client, main_fake, sec_fake):
     r = c.post("/api/actions/blocking", json={"target": "secondary", "enabled": False, "minutes": 5})
     assert r.status_code == 200
     assert (sec_fake.blocking, sec_fake.blocking_timer) == ("disabled", 300)
+    sec = c.get("/api/status").json()["piholes"][1]
+    assert (sec["blocking"], sec["blocking_timer"]) == ("disabled", 300) and sec["blocking_until"]
     assert main_fake.blocking == "enabled"
 
 

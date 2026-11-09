@@ -73,6 +73,9 @@ const state = {
   queryFilter: { text: "", status: "all", pihole: "" },
   deviceFilter: { text: "", scope: "active", unnamed: false, oneOnly: false, silent: false },
   target: "both",
+  gen: 0, // bumped on each page change, so a slow fetch for the old page is dropped
+  live: null, // the current page's refresh: { fn, every, last }
+  statusAt: 0, // Date.now() when state.status arrived, to count timers down between fetches
 };
 
 const pages = { overview, history, queries, devices, sync, manage, actions };
@@ -92,12 +95,91 @@ function cleanup() {
   state.charts = [];
   state.timers.forEach((t) => clearInterval(t));
   state.timers = [];
+  state.live = null;
 }
+
+// ---------- live refresh -------------------------------------------------------------
+
+// A page calls live() to keep itself current: fn runs after a status refresh, at most every
+// `every` ms. fn returns false to skip a round, e.g. while you're typing in a form.
+const TICK = 15000;
+// alive() at the start of a page gives a check that it's still the page being shown.
+function alive() {
+  const gen = state.gen;
+  return () => gen === state.gen;
+}
+function live(fn, every = TICK) {
+  state.live = { fn, every, last: Date.now() };
+}
+
+let ticking = false, again = false;
+async function tick() {
+  if (document.hidden) return;
+  if (ticking) { again = true; return; } // run once more when this one finishes
+  ticking = true;
+  try {
+    const page = state.live;
+    await refreshStatus();
+    if (page && page === state.live && Date.now() - page.last >= page.every - 1000) {
+      if ((await page.fn()) !== false) page.last = Date.now();
+    }
+  } catch (e) {
+    console.warn("refresh failed", e);
+  } finally {
+    ticking = false;
+  }
+  if (again) { again = false; tick(); }
+}
+function forceTick() {
+  if (state.live) state.live.last = 0;
+  tick();
+}
+
+// Seconds left on a timed pause, counted down locally between status fetches.
+function remaining(until) {
+  if (!until || !state.status) return 0;
+  return Math.max(0, until - state.status.now - (Date.now() - state.statusAt) / 1000);
+}
+function countdown(sec) {
+  sec = Math.ceil(sec);
+  if (sec >= 3600) return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+function blockingCell(p) {
+  if (p.blocking == null) return `<span class="muted">–</span>`;
+  if (p.blocking === "enabled") return `<span class="pill ok">enabled</span>`;
+  const left = remaining(p.blocking_until);
+  return `<span class="pill bad">${esc(p.blocking)}</span>${left ? ` <span class="muted">re-enables in <span data-until="${p.blocking_until}">${countdown(left)}</span></span>` : ""}`;
+}
+
+// True while you're typing in or have changed a field on the page, so a refresh doesn't wipe it.
+function editingForm(root) {
+  const a = document.activeElement;
+  if (a && root.contains(a) && a.matches("input, select, textarea")) return true;
+  return $$("form input, form textarea", root).some((i) => (i.type === "checkbox" || i.type === "radio" ? i.checked !== i.defaultChecked : i.value !== i.defaultValue));
+}
+
+// When a pause should end, fetch again just after so the page flips back to enabled.
+let expiryTimer;
+function scheduleExpiry() {
+  clearTimeout(expiryTimer);
+  // A pause that has just run out but still reads as off is retried every few seconds for a bit.
+  const waits = piholes().filter((p) => p.blocking_until && p.blocking !== "enabled").map((p) => {
+    const left = remaining(p.blocking_until);
+    return left > 0 ? left + 4 : remaining(p.blocking_until + 30) > 0 ? 3 : null;
+  }).filter((x) => x != null);
+  if (waits.length) expiryTimer = setTimeout(forceTick, Math.min(...waits) * 1000);
+}
+
+setInterval(() => {
+  $$("[data-until]").forEach((n) => (n.textContent = countdown(remaining(Number(n.dataset.until)))));
+}, 1000);
 
 async function go() {
   const page = (location.hash.slice(1) || "overview").split(/[/?]/)[0];
   const fn = pages[page] || overview;
   cleanup();
+  state.gen++;
   state.page = page in pages ? page : "overview";
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.page === state.page));
   const el = $("#page");
@@ -112,6 +194,7 @@ async function go() {
 async function refreshStatus() {
   try {
     state.status = await api("/api/status");
+    state.statusAt = Date.now();
   } catch (e) {
     $("#updated").textContent = `twinhole unreachable: ${e.message}`;
     return;
@@ -125,6 +208,7 @@ async function refreshStatus() {
   navOverview.innerHTML = "Overview" + (s.alerts.length ? `<span class="count">${s.alerts.length}</span>` : "");
   const navSync = $('#nav [data-page="sync"]');
   navSync.innerHTML = "Sync" + (s.sync.count ? `<span class="count" style="background:var(--warn)">${s.sync.count}</span>` : "");
+  scheduleExpiry();
 }
 
 document.addEventListener("click", (e) => {
@@ -231,9 +315,6 @@ function piholeCard(p, other) {
   const s = p.summary || {};
   const g = p.gravity || {};
   const gAge = g.last_update ? (state.status.now - g.last_update) / 86400 : null;
-  const blocking = p.blocking == null ? `<span class="muted">–</span>`
-    : p.blocking === "enabled" ? `<span class="pill ok">enabled</span>`
-    : `<span class="pill bad">${esc(p.blocking)}</span>${p.blocking_timer ? ` <span class="muted">re-enables in ${Math.ceil(p.blocking_timer / 60)} min</span>` : ""}`;
   return `
   <section class="card pihole-card" style="--c:${p.role === "secondary" ? "var(--c-sec)" : "var(--c-main)"}">
     <div class="title">
@@ -257,7 +338,7 @@ function piholeCard(p, other) {
       <dt>Recursion</dt><dd>${recursionCell(p)}</dd>
       <dt>DNSSEC</dt><dd>${dnssecCell(p)}</dd>
       <dt>Cache</dt><dd>${cacheCell(p)}</dd>
-      <dt>Blocking</dt><dd>${blocking}</dd>
+      <dt>Blocking</dt><dd>${blockingCell(p)}</dd>
       <dt>Gravity</dt><dd>${gAge == null ? "–" : `<span class="dot ${gAge > 8 ? "warn" : "ok"}"></span>updated ${fmt.ago(g.last_update)} · ${fmt.num(g.domains_being_blocked)} domains`}</dd>
       <dt>Versions</dt><dd>${versionsCell(p, other)}</dd>
       <dt>Resolver</dt><dd>${resolverVersionCell(p, other)}</dd>
@@ -266,11 +347,13 @@ function piholeCard(p, other) {
 }
 
 async function overview(el) {
+  const here = alive();
   const draw = async () => {
     const s = state.status;
     if (!s) return;
     const [m, sec] = s.piholes;
     const events = await api("/api/events?limit=25");
+    if (!here()) return;
     const alerts = s.alerts.length
       ? `<div class="banner bad"><b>${s.alerts.length} active alert${s.alerts.length > 1 ? "s" : ""}</b><ul>${s.alerts.map((a) => `<li><b>${esc(a.title)}</b> – ${esc(a.detail)} <span class="muted">(since ${fmt.dateTime(a.since)})</span></li>`).join("")}</ul></div>`
       : "";
@@ -296,16 +379,15 @@ async function overview(el) {
         </section>
       </div>`;
     const [hist, top] = await Promise.all([api("/api/history?range=24h"), api("/api/top?days=1&limit=5")]);
+    if (!here()) return;
     dayCard($("#day-card"), hist, top);
   };
   await draw();
-  state.timers.push(setInterval(async () => {
-    await refreshStatus();
-    if (state.page !== "overview") return;
+  live(async () => {
     state.charts.forEach((c) => c.destroy());
     state.charts = [];
     await draw();
-  }, 15000));
+  });
 }
 
 function dayCard(card, hist, top) {
@@ -516,6 +598,7 @@ async function history(el) {
     if (name === "topPihole") state.topPihole = b.dataset.v;
     go();
   };
+  live(go, 60000);
 }
 
 // ---------- query log --------------------------------------------------------------
@@ -527,6 +610,7 @@ function hashParams() {
 }
 
 async function queries(el) {
+  const here = alive();
   const f = state.queryFilter;
   const params = hashParams();
   const clients = (params.get("client") || "").split(",").filter(Boolean);
@@ -548,7 +632,9 @@ async function queries(el) {
   $("#qstatus").value = f.status;
   $("#qpihole").value = f.pihole;
   const load = async () => {
-    state.queries = await api("/api/queries" + (clients.length ? "?" + clients.map((c) => `client=${encodeURIComponent(c)}`).join("&") : ""));
+    const fresh = await api("/api/queries" + (clients.length ? "?" + clients.map((c) => `client=${encodeURIComponent(c)}`).join("&") : ""));
+    if (!here()) return;
+    state.queries = fresh;
     $("#qerrors").innerHTML = state.queries.errors.map((e) => `<div class="banner warn">${esc(e)}</div>`).join("");
     draw();
   };
@@ -580,6 +666,10 @@ async function queries(el) {
   $("#qstatus").onchange = (e) => { f.status = e.target.value; draw(); };
   $("#qpihole").onchange = (e) => { f.pihole = e.target.value; draw(); };
   $("#qreload").onclick = load;
+  live(async () => {
+    if ($("#qtable").matches(":hover")) return false;
+    await load();
+  });
   $("#qtable").onclick = async (e) => {
     const b = e.target.closest("[data-qact]");
     if (!b) return;
@@ -625,9 +715,10 @@ function deviceEditor(d, groups, pis) {
 }
 
 async function devices(el) {
+  const here = alive();
   const f = state.deviceFilter;
   el.innerHTML = `<section class="card"><p class="empty">Reading both Pi-holes' device lists…</p></section>`;
-  const data = await api("/api/devices");
+  let data = await api("/api/devices");
   const pis = data.piholes;
   const piholeIps = new Set(pis.map((p) => p.id));
   let editing = null;
@@ -726,6 +817,13 @@ async function devices(el) {
     }
   };
   draw();
+  live(async () => {
+    if (editing || editingForm(el)) return false;
+    const fresh = await api("/api/devices");
+    if (!here() || editing || editingForm(el)) return false;
+    data = fresh;
+    draw();
+  }, 60000);
 }
 
 // ---------- sync -------------------------------------------------------------------
@@ -744,6 +842,7 @@ function autoNote(auto) {
 }
 
 async function sync(el) {
+  const here = alive();
   const s = state.status;
   const [m, sec] = s.piholes;
   el.innerHTML = `<section class="card"><p class="empty">Comparing ${esc(m.name)} and ${esc(sec.name)}…</p></section>`;
@@ -812,6 +911,13 @@ async function sync(el) {
     };
   };
   draw();
+  live(async () => {
+    if (result || state.status.sync.checked === preview.checked) return;
+    const fresh = await api("/api/sync");
+    if (!here() || result) return;
+    preview = fresh;
+    draw();
+  });
 }
 
 // ---------- manage -----------------------------------------------------------------
@@ -947,15 +1053,24 @@ async function manage(el) {
     btn.disabled = true;
     if (await edit(formToEdit(tab, e.target))) go(); else btn.disabled = false;
   };
+  const here = alive();
+  live(async () => {
+    if (editingForm(el)) return false;
+    const fresh = await api("/api/manage");
+    if (!here() || editingForm(el)) return false;
+    if (JSON.stringify(fresh) !== JSON.stringify(state.manage)) go(); // redraw only on a change
+  }, 60000);
 }
 
 // ---------- actions ----------------------------------------------------------------
 
 async function actions(el) {
+  const here = alive();
   const off = writesOff() ? "disabled" : "";
   const targets = [["both", "Both"], ...piholes().map((p) => [p.role, p.name])];
   const draw = async () => {
     const grav = await api("/api/actions/gravity");
+    if (!here()) return false;
     const status = state.status;
     el.innerHTML = `
       ${writesOff() ? `<div class="banner info">Read-only mode: actions are off until you set <code>ALLOW_WRITES=true</code> in <code>.env</code> and restart twinhole.</div>` : ""}
@@ -963,7 +1078,7 @@ async function actions(el) {
       <div class="grid cols-2">
         <section class="card">
           <h2>Blocking</h2>
-          <dl class="kv" style="margin-top:0">${status.piholes.map((p) => `<dt>${esc(p.name)}</dt><dd>${p.blocking === "enabled" ? `<span class="pill ok">enabled</span>` : `<span class="pill bad">${esc(p.blocking || "unknown")}</span>${p.blocking_timer ? ` <span class="muted">re-enables in ${Math.ceil(p.blocking_timer / 60)} min</span>` : ""}`}</dd>`).join("")}</dl>
+          <dl class="kv" style="margin-top:0">${status.piholes.map((p) => `<dt>${esc(p.name)}</dt><dd>${blockingCell(p)}</dd>`).join("")}</dl>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
             <button class="btn" data-block="5" ${off}>Pause 5 min</button>
             <button class="btn" data-block="30" ${off}>Pause 30 min</button>
@@ -1003,7 +1118,7 @@ async function actions(el) {
         const failed = r.results.filter((x) => !x.ok);
         failed.length ? toast(failed.map((x) => x.error).join(" · "), true) : toast("Done");
       } catch (err) { toast(err.message, true); }
-      setTimeout(async () => { await refreshStatus(); draw(); }, 800);
+      forceTick();
     }
     if (e.target.id === "gravrun") {
       try {
@@ -1023,12 +1138,14 @@ async function actions(el) {
     state.timers.push(polling);
   };
   if (running) poll();
+  live(async () => { if (await draw()) poll(); });
 }
 
 // ---------- start --------------------------------------------------------------------
 
 (async () => {
   await refreshStatus();
-  setInterval(() => { if (state.page !== "overview") refreshStatus(); }, 15000);
+  setInterval(tick, TICK);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) forceTick(); });
   await go();
 })();
