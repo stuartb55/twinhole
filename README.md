@@ -146,6 +146,8 @@ required.
 | `NTFY_TOKEN` | (none) | Access token, if your ntfy server needs one to publish |
 | `ALLOW_WRITES` | `false` | See [read-only mode](#read-only-mode) |
 | `AUTO_SYNC` | `false` | See [auto-sync](#auto-sync) |
+| `ALLOWED_HOSTS` | (none) | Extra names twinhole answers to, comma-separated; see [host names](#host-names) |
+| `HEARTBEAT_URL` | (none) | Address to call after each round of checks, so an outside monitor notices if twinhole stops; see [heartbeat](#heartbeat) |
 | `TZ` | `Europe/London` | Time zone for daily history and charts |
 
 The rest (check intervals, alert thresholds, history retention) are tuning knobs
@@ -167,6 +169,30 @@ won't when that looks risky. If a change would delete more than
 that looks empty, it leaves everything as it is, sends an alert, and waits for you to
 review it on the Sync page. If either Pi-hole can't be read, it does nothing.
 
+### Host names
+
+twinhole only answers requests addressed to an IP address, `localhost`, a name without
+dots (`ubuntuserver`), or a name ending in `.lan`, `.local`, `.home`, `.home.arpa`,
+`.internal`, `.localdomain` or `.ts.net` (Tailscale). Anything else gets "421 Misdirected
+Request". This stops a web page from using DNS rebinding to reach twinhole through your
+browser. If you open twinhole under another name, such as one from your own domain, add
+it to `ALLOWED_HOSTS` (for example `ALLOWED_HOSTS=twinhole.example.org`).
+
+Changes from a browser must also come from twinhole's own page: a request whose
+`Origin` is another site is refused. Scripts that send no `Origin` still work.
+
+### Heartbeat
+
+Alerts can only be sent while twinhole is running. Set `HEARTBEAT_URL` to a "push" or
+"heartbeat" address from a monitoring service, such as healthchecks.io or an Uptime Kuma
+push monitor, and twinhole calls it with a GET after each round of checks, at most once
+every `HEARTBEAT_INTERVAL` seconds (default 60). Have that service alert you when the
+calls stop. Run it somewhere other than the machine twinhole is on, or it goes down
+with it.
+
+If ntfy can't be reached when an alert fires, twinhole keeps the message and sends it
+again after each round of checks, in order and marked as late, for up to a day.
+
 ## Things worth knowing
 
 - **Use IP addresses in `.env`.** A passwordless Pi-hole only answers API requests
@@ -176,7 +202,8 @@ review it on the Sync page. If either Pi-hole can't be read, it does nothing.
   debounce means it won't trigger an alert.
 - **Nothing in the dashboard requires a login.** Anyone who can reach port 8053 can
   use it, including making changes once writes are on. Keep it on your LAN or behind
-  a VPN, and don't expose it to the internet.
+  a VPN, and don't expose it to the internet. The [host name](#host-names) check stops
+  web pages from reaching it through your browser, not people on your network.
 - **The recursion check looks up names like `twinhole-1a2b3c4d.example.com`**, one per
   Pi-hole every 5 minutes, so they appear in the query log too. NXDOMAIN is the
   expected answer.
