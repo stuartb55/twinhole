@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
 import httpx
@@ -21,6 +22,8 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 URGENT, DEFAULT, LOW = 5, 3, 2
+RETRY_FOR = 24 * 3600  # keep trying a message that couldn't be sent for this long
+OUTBOX_MAX = 100
 
 
 class Notifier(Protocol):
@@ -53,6 +56,15 @@ class _Pending:
     since: float = 0.0
 
 
+@dataclass
+class _Unsent:
+    title: str
+    message: str
+    priority: int
+    tags: list[str] = field(default_factory=list)
+    at: float = 0.0  # when it should have been sent
+
+
 class AlertManager:
     def __init__(self, store: Store, notifier: Notifier, clock: Callable[[], float] = time.time):
         self.store = store
@@ -60,6 +72,9 @@ class AlertManager:
         self.clock = clock
         self._pending: dict[str, _Pending] = {}
         self.active = store.active_alerts()
+        # Messages ntfy didn't take, oldest first. Sent again by flush(), in order, so a
+        # recovery never arrives before the alert it belongs to.
+        self.outbox: list[_Unsent] = []
 
     async def observe(
         self,
@@ -107,12 +122,41 @@ class AlertManager:
             await self._send(f"Recovered - {alert['title']}", message, LOW, ["white_check_mark"])
 
     async def _send(self, title: str, message: str, priority: int, tags: list[str]) -> None:
+        unsent = _Unsent(title, message, priority, tags, self.clock())
+        if self.outbox:  # ntfy was failing a moment ago: queue behind the older messages
+            self._queue(unsent, "ntfy wasn't taking messages")
+            await self.flush()
+            return
         try:
             await self.notifier.send(title, message, priority, tags)
         except Exception as e:  # a broken ntfy must never stop monitoring
-            reason = _ntfy_reason(e)
-            log.warning("could not send ntfy message %r: %s", title, reason)
-            self.store.add_event("info", f"Could not send alert '{title}': {reason}")
+            self._queue(unsent, _ntfy_reason(e))
+
+    def _queue(self, unsent: _Unsent, reason: str) -> None:
+        log.warning("could not send ntfy message %r: %s; will retry", unsent.title, reason)
+        self.store.add_event("info", f"Could not send alert '{unsent.title}': {reason}. twinhole will keep trying.")
+        self.outbox.append(unsent)
+        if len(self.outbox) > OUTBOX_MAX:
+            dropped = self.outbox.pop(0)
+            self.store.add_event("info", f"Gave up sending alert '{dropped.title}': too many unsent messages")
+
+    async def flush(self) -> None:
+        """Try the unsent messages again, oldest first, stopping at the first that still fails."""
+        now = self.clock()
+        while self.outbox:
+            u = self.outbox[0]
+            if now - u.at > RETRY_FOR:
+                self.outbox.pop(0)
+                self.store.add_event("info", f"Gave up sending alert '{u.title}' after {_duration(now - u.at)}")
+                continue
+            late = f" (sent late: this happened at {datetime.fromtimestamp(u.at).strftime('%H:%M')})"
+            try:
+                await self.notifier.send(u.title, u.message + late, u.priority, u.tags)
+            except Exception as e:
+                log.info("ntfy still not taking messages: %s", _ntfy_reason(e))
+                return
+            self.outbox.pop(0)
+            self.store.add_event("info", f"Sent alert '{u.title}' late, after ntfy recovered")
 
 
 def _ntfy_reason(e: Exception) -> str:

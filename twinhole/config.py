@@ -48,6 +48,9 @@ class Settings:
     query_log_size: int = 500
     tz: str = "Europe/London"
     db_path: str = "/data/twinhole.db"
+    allowed_hosts: tuple[str, ...] = ()
+    heartbeat_url: str = ""
+    heartbeat_interval: int = 60
 
     @property
     def piholes(self) -> tuple[PiholeConfig, PiholeConfig]:
@@ -126,4 +129,9 @@ def load(env: Mapping[str, str] = os.environ) -> Settings:
         query_log_size=_int(env, "QUERY_LOG_SIZE", 500),
         tz=env.get("TZ", "").strip() or "Europe/London",
         db_path=env.get("DB_PATH", "").strip() or "/data/twinhole.db",
+        allowed_hosts=tuple(
+            h.strip().lower().rstrip(".") for h in env.get("ALLOWED_HOSTS", "").split(",") if h.strip()
+        ),
+        heartbeat_url=env.get("HEARTBEAT_URL", "").strip(),
+        heartbeat_interval=_int(env, "HEARTBEAT_INTERVAL", 60),
     )

@@ -102,3 +102,11 @@ async def test_manual_apply_clears_a_hold(make_service, main_fake, sec_fake):
     await svc.apply(preview["plan_id"])
     assert svc.auto["held"] is None
     assert sec_fake.lists == {}
+
+
+async def test_the_sync_event_lists_every_item_it_changed(make_service, main_fake, sec_fake, store):
+    main_fake.add_domain("deny", "exact", "ads.example")
+    sec_fake.add_domain("deny", "exact", "stale.example")
+    await make_service().check_drift()
+    detail = store.events(5)[0]["detail"].splitlines()
+    assert detail == ["Added domain ads.example (block, exact)", "Deleted domain stale.example (block, exact)"]

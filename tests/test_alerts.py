@@ -96,3 +96,41 @@ async def test_ntfy_publishes_json_with_token_and_explains_refusals(store, clock
     mgr = AlertManager(store, anonymous, clock)
     await observe(mgr, True, after_count=1)
     assert "set NTFY_TOKEN" in store.events()[0]["message"]
+
+
+async def test_unsent_alerts_are_retried_in_order_once_ntfy_is_back(store, notifier, clock):
+    notifier.fail = True
+    mgr = AlertManager(store, notifier, clock)
+    await observe(mgr, True, after_count=1)
+    clock.advance(60)
+    await observe(mgr, False)
+    assert len(mgr.outbox) == 2 and notifier.sent == []
+    await mgr.flush()  # still down: nothing lost
+    assert len(mgr.outbox) == 2
+
+    notifier.fail = False
+    clock.advance(60)
+    await mgr.flush()
+    assert [m["title"] for m in notifier.sent] == ["Main is unreachable", "Recovered - Main is unreachable"]
+    assert "sent late" in notifier.sent[0]["message"]
+    assert mgr.outbox == []
+    assert any("Sent alert 'Main is unreachable' late" in e["message"] for e in store.events())
+
+
+async def test_a_new_alert_waits_behind_older_unsent_ones(store, notifier, clock):
+    notifier.fail = True
+    mgr = AlertManager(store, notifier, clock)
+    await observe(mgr, True, after_count=1)
+    notifier.fail = False
+    await mgr.observe("p2:api", True, pihole="p2", title="Second is unreachable", detail="x", priority=URGENT)
+    assert [m["title"] for m in notifier.sent] == ["Main is unreachable", "Second is unreachable"]
+
+
+async def test_gives_up_on_a_message_after_a_day(store, notifier, clock):
+    notifier.fail = True
+    mgr = AlertManager(store, notifier, clock)
+    await observe(mgr, True, after_count=1)
+    clock.advance(25 * 3600)
+    await mgr.flush()
+    assert mgr.outbox == []
+    assert any("Gave up sending" in e["message"] for e in store.events())

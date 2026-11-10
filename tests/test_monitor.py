@@ -344,3 +344,27 @@ async def test_pause_ending_is_picked_up_without_waiting_a_cycle(
     await asyncio.sleep(0.2)
     assert (st["blocking"], st["blocking_timer"], st["blocking_until"]) == ("enabled", None, None)
     assert mon._expiry == {}
+
+
+async def test_dns_is_checked_while_the_api_is_still_answering(
+    settings, main_fake, sec_fake, store, notifier, fake_dns, clock
+):
+    # The API won't answer until the DNS check has started, as with a web server that hangs.
+    started = asyncio.Event()
+    real_probe = fake_dns.__call__
+
+    async def probe(server, port, domain, timeout):
+        started.set()
+        return await real_probe(server, port, domain, timeout)
+
+    def slow(fake):
+        async def handle(request):
+            await asyncio.wait_for(started.wait(), 2)
+            return fake.handle(request)
+        return httpx.MockTransport(handle)
+
+    piholes = [Pihole(settings.main, transport=slow(main_fake)), Pihole(settings.secondary, transport=slow(sec_fake))]
+    mon = Monitor(settings, piholes, AlertManager(store, notifier, clock), probe, clock,
+                  fake_dns.version, fake_dns.latest_unbound)
+    await mon.run_cycle()
+    assert mon.status["192.168.1.118"]["dns"]["v4"]["ok"] and mon.status["192.168.1.118"]["api"]["ok"]
