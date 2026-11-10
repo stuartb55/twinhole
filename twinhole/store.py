@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS events (
     ts INTEGER NOT NULL,
     pihole TEXT,
     kind TEXT NOT NULL,         -- alert | recovered | sync | action | info
-    message TEXT NOT NULL
+    message TEXT NOT NULL,
+    detail TEXT                 -- optional longer text, e.g. each item a sync changed, one per line
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
 
@@ -88,6 +89,9 @@ class Store:
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.executescript(SCHEMA)
+            columns = {r["name"] for r in self._db.execute("PRAGMA table_info(events)")}
+            if "detail" not in columns:  # added after the first release; older databases lack it
+                self._db.execute("ALTER TABLE events ADD COLUMN detail TEXT")
 
     def close(self) -> None:
         self._db.close()
@@ -192,15 +196,17 @@ class Store:
 
     # --- events and alerts --------------------------------------------------
 
-    def add_event(self, kind: str, message: str, pihole: str | None = None, ts: int | None = None) -> None:
+    def add_event(
+        self, kind: str, message: str, pihole: str | None = None, ts: int | None = None, detail: str | None = None
+    ) -> None:
         self._exec(
-            "INSERT INTO events (ts, pihole, kind, message) VALUES (?, ?, ?, ?)",
-            (ts or int(time.time()), pihole, kind, message),
+            "INSERT INTO events (ts, pihole, kind, message, detail) VALUES (?, ?, ?, ?, ?)",
+            (ts or int(time.time()), pihole, kind, message, detail),
         )
 
     def events(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._exec(
-            "SELECT ts, pihole, kind, message FROM events ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
+            "SELECT ts, pihole, kind, message, detail FROM events ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
         )
         return [dict(r) for r in rows]
 

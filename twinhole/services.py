@@ -13,7 +13,7 @@ from .config import Settings
 from .pihole import Pihole, PiholeError
 from .store import Store
 from .sync import (
-    Change, Snapshot, apply, apply_change, norm_cname, norm_host, plan, plan_id, snapshot, summarize
+    NOUNS, Change, Snapshot, apply, apply_change, norm_cname, norm_host, plan, plan_id, snapshot, summarize
 )
 
 log = logging.getLogger(__name__)
@@ -178,7 +178,9 @@ class SyncService:
         message = f"{verb} {self.secondary.name} from {self.main.name}: {summarize(changes)}"
         if failed:
             message += f" ({failed} failed)"
-        self.store.add_event("sync", message, self.secondary.id)
+        detail = "\n".join(_change_line(r) for r in results)
+        log.info("%s\n%s", message, detail)
+        self.store.add_event("sync", message, self.secondary.id, detail=detail)
         gravity_started = False
         if any(r["resource"] == "lists" and r["ok"] for r in results):
             gravity_started = self.gravity.start(self.secondary, "adlists changed by sync")
@@ -188,6 +190,16 @@ class SyncService:
         except PiholeError:
             pass
         return {"results": results, "gravity_started": gravity_started, "after": self.last}
+
+
+_VERBS = {"add": "Added", "update": "Changed", "delete": "Deleted"}
+
+
+def _change_line(result: dict[str, Any]) -> str:
+    """'Deleted domain ads.example (block, exact)', plus why, if it failed."""
+    one = NOUNS[result["resource"]][0]
+    line = f"{_VERBS[result['action']]} {one} {result['label']}"
+    return line if result["ok"] else f"{line}: FAILED, {result['error']}"
 
 
 class Editor:

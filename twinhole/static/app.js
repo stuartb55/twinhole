@@ -219,13 +219,26 @@ window.addEventListener("hashchange", go);
 
 // ---------- overview -------------------------------------------------------------
 
+// What's wrong with a Pi-hole, in a few words each, worst first. Empty when it's healthy.
+const ALERT_REASONS = { gravity: "blocklists are stale", update: null, api: null, dns4: null, dns6: null, blocking: null, recursion: null, dnssec: null };
 function health(p) {
-  const alerts = state.status.alerts.filter((a) => a.key.startsWith(p.id + ":"));
-  if (p.api.ok === null) return ["unknown", "Checking…"];
-  if (!p.api.ok || (p.dns.v4 && !p.dns.v4.ok)) return ["bad", "Not working"];
+  if (p.api.ok === null) return ["unknown", "Checking…", []];
   const r = p.resolver || {};
-  if (alerts.length || (p.dns.v6 && !p.dns.v6.ok) || p.blocking !== "enabled" || r.recursion?.ok === false || r.dnssec?.ok === false) return ["warn", "Needs attention"];
-  return ["ok", "Healthy"];
+  const bad = [], warn = [];
+  if (!p.api.ok) bad.push("API not answering");
+  if (p.dns.v4 && !p.dns.v4.ok) bad.push("DNS (IPv4) failing");
+  if (p.dns.v6 && !p.dns.v6.ok) warn.push("DNS (IPv6) failing");
+  if (p.api.ok && p.blocking && p.blocking !== "enabled") warn.push(p.blocking_until ? "blocking paused" : `blocking ${p.blocking}`);
+  if (r.recursion?.ok === false) warn.push("can't resolve new names");
+  if (r.dnssec?.ok === false) warn.push("not validating DNSSEC");
+  for (const a of state.status.alerts.filter((a) => a.key.startsWith(p.id + ":"))) {
+    const kind = a.key.slice(p.id.length + 1);
+    const reason = kind in ALERT_REASONS ? ALERT_REASONS[kind] : a.title.replace(p.name, "").trim();
+    if (reason && !warn.includes(reason)) warn.push(reason);
+  }
+  if (bad.length) return ["bad", "Not working", [...bad, ...warn]];
+  if (warn.length) return ["warn", "Needs attention", warn];
+  return ["ok", "Healthy", []];
 }
 
 function dnsCell(r) {
@@ -288,12 +301,34 @@ function duration(s) {
   return `${Math.round(s / 86400)} days`;
 }
 
+// "v6.5.1" -> [6, 5, 1]; null when there's no number in it.
+function verParts(v) {
+  const m = String(v || "").match(/\d+(\.\d+)*/);
+  return m ? m[0].split(".").map(Number) : null;
+}
+// Negative when a is older than b, 0 when equal or not comparable.
+function cmpVer(a, b) {
+  const x = verParts(a), y = verParts(b);
+  if (!x || !y) return 0;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+// Only the older of two different versions is marked, so the up-to-date one doesn't look wrong.
+function versionText(text, mine, theirs, outdated) {
+  const older = outdated || (theirs && cmpVer(mine, theirs) < 0);
+  const title = older ? (theirs && cmpVer(mine, theirs) < 0 ? `Older than the other Pi-hole's ${theirs}` : "An update is available")
+    : theirs && mine !== theirs ? `The other Pi-hole has ${theirs}` : "";
+  return `<span title="${esc(title)}" class="${older ? "outdated" : ""}">${esc(text)}</span>`;
+}
+
 function versionsCell(p, other) {
   if (!p.versions) return `<span class="muted">–</span>`;
   const parts = ["core", "web", "ftl"].map((k) => {
     const v = p.versions[k];
-    const differs = other?.versions && other.versions[k].local !== v.local;
-    return `<span title="${differs ? "Differs from the other Pi-hole" : ""}" style="${differs ? "color:var(--warn);font-weight:600" : ""}">${k === "ftl" ? "FTL" : k[0].toUpperCase() + k.slice(1)} ${esc(v.local || "?")}</span>`;
+    return versionText(`${k === "ftl" ? "FTL" : k[0].toUpperCase() + k.slice(1)} ${v.local || "?"}`, v.local, other?.versions?.[k]?.local, v.update);
   });
   const updates = ["core", "web", "ftl"].filter((k) => p.versions[k].update);
   return parts.join(" · ") + (updates.length ? ` <span class="pill warn" title="${esc(updates.map((k) => `${k}: ${p.versions[k].remote}`).join(", "))}">update available</span>` : "");
@@ -305,23 +340,23 @@ function resolverVersionCell(p, other) {
   if (!v.version) {
     return `<span class="muted" title="twinhole asks ${esc(v.server)} for its version. Unbound has to listen on the Pi-hole's LAN address and allow twinhole's address; see the README.">not readable (${esc(v.error || "no answer")})</span>`;
   }
-  const differs = other?.resolver?.version?.version && other.resolver.version.version !== v.version;
   const update = v.update ? ` <span class="pill warn" title="${esc(`Latest Unbound release: ${v.latest}`)}">update available</span>` : "";
-  return `<span title="${differs ? "Differs from the other Pi-hole" : ""}" style="${differs ? "color:var(--warn);font-weight:600" : ""}">${esc(v.name ? `${v.name} ${v.version}` : v.version)}</span>${update} <span class="muted mono">${esc(v.server)}</span>`;
+  return `${versionText(v.name ? `${v.name} ${v.version}` : v.version, v.version, other?.resolver?.version?.version, v.update)}${update} <span class="muted mono">${esc(v.server)}</span>`;
 }
 
 function piholeCard(p, other) {
-  const [level, label] = health(p);
+  const [level, label, reasons] = health(p);
   const s = p.summary || {};
   const g = p.gravity || {};
   const gAge = g.last_update ? (state.status.now - g.last_update) / 86400 : null;
   return `
-  <section class="card pihole-card" style="--c:${p.role === "secondary" ? "var(--c-sec)" : "var(--c-main)"}">
+  <section class="card pihole-card" id="card-${esc(p.role)}" style="--c:${p.role === "secondary" ? "var(--c-sec)" : "var(--c-main)"}">
     <div class="title">
       <h2>${esc(p.name)}</h2>
       <span class="pill">${p.role}</span>
       <span class="pill ${level}" style="margin-left:auto"><span class="dot ${level}"></span>${label}</span>
     </div>
+    ${reasons.length ? `<div class="reasons ${level}">${esc(reasons.join(" · "))}</div>` : ""}
     <div class="small muted"><a href="${esc(p.url)}/admin/" target="_blank" rel="noopener">${esc(p.url)}</a></div>
     <div class="stats">
       <div class="stat"><b>${fmt.num(s.total)}</b><span>queries (24h)</span></div>
@@ -346,51 +381,119 @@ function piholeCard(p, other) {
   </section>`;
 }
 
+// Pause or turn blocking back on, from the Overview or the Actions page.
+async function setBlocking(v, target) {
+  const body = v === "on" ? { target, enabled: true } : v === "off" ? { target, enabled: false } : { target, enabled: false, minutes: Number(v) };
+  try {
+    const r = await api("/api/actions/blocking", { body });
+    const failed = r.results.filter((x) => !x.ok);
+    failed.length ? toast(failed.map((x) => x.error).join(" · "), true)
+      : toast(v === "on" ? "Blocking is on" : v === "off" ? "Blocking is off" : `Blocking paused for ${v < 60 ? `${v} min` : "1 hour"}`);
+  } catch (err) { toast(err.message, true); }
+  forceTick();
+}
+
+// The top of the Overview: both Pi-holes at a glance, and blocking controls.
+function statusStrip(s) {
+  const off = writesOff() ? "disabled title='Read-only mode'" : "";
+  const who = s.piholes.map((p) => {
+    const [level, label, reasons] = health(p);
+    return `<a class="who" href="#card-${esc(p.role)}" data-jump="card-${esc(p.role)}"><span class="dot ${level}"></span><b>${esc(p.name)}</b> <span class="${level === "ok" || level === "unknown" ? "muted" : `${level}-text`}">${esc(reasons[0] ? (reasons.length > 1 ? `${reasons[0]} +${reasons.length - 1}` : reasons[0]) : label)}</span></a>`;
+  }).join("");
+  const paused = s.piholes.filter((p) => p.blocking && p.blocking !== "enabled");
+  const left = Math.max(0, ...paused.map((p) => remaining(p.blocking_until)));
+  const blocking = !paused.length
+    ? `<span class="muted">Blocking on</span>
+       <button class="btn small" data-block="5" ${off}>Pause 5 min</button>
+       <button class="btn small" data-block="30" ${off}>30 min</button>
+       <button class="btn small" data-block="60" ${off}>1 hour</button>`
+    : `<span class="warn-text">Blocking ${paused.length === s.piholes.length ? "off" : `off on ${esc(paused.map((p) => p.name).join(", "))}`}${left ? `, back in <span data-until="${Math.max(...paused.map((p) => p.blocking_until || 0))}">${countdown(left)}</span>` : ""}</span>
+       <button class="btn small primary" data-block="on" ${off}>Turn blocking on</button>`;
+  const unsent = s.unsent_alerts ? `<div class="small warn-text">${s.unsent_alerts} alert${s.unsent_alerts > 1 ? "s" : ""} couldn't be sent to ntfy yet; twinhole keeps trying.</div>` : "";
+  const hb = s.heartbeat?.enabled && s.heartbeat.error ? `<div class="small warn-text">Heartbeat failing: ${esc(s.heartbeat.error)}</div>` : "";
+  return `<section class="card strip" id="ov-strip"><div class="strip-who">${who}</div><div class="strip-block">${blocking}</div>${unsent}${hb}</section>`;
+}
+
+function alertsBanner(s) {
+  if (!s.alerts.length) return `<div id="ov-alerts"></div>`;
+  return `<div id="ov-alerts" class="banner bad"><b>${s.alerts.length} active alert${s.alerts.length > 1 ? "s" : ""}</b><ul>${s.alerts.map((a) => `<li><b>${esc(a.title)}</b> – ${esc(a.detail)} <span class="muted">(since ${fmt.dateTime(a.since)})</span></li>`).join("")}</ul></div>`;
+}
+
+function syncCard(s, m, sec, events) {
+  const sync = s.sync;
+  const syncText = sync.error ? `<span class="dot bad"></span>Couldn't compare: ${esc(sync.error)}`
+    : !sync.checked ? `<span class="muted">Not checked yet</span>`
+    : sync.auto?.held ? `<span class="dot bad"></span>Auto-sync waiting for you: ${esc(sync.summary)}`
+    : sync.count ? `<span class="dot warn"></span>${esc(sync.summary)}` : `<span class="dot ok"></span>In sync`;
+  return `
+    <section class="card" id="ov-sync">
+      <div class="card-head"><h2>Sync</h2><div class="right"><a href="#sync">Review →</a></div></div>
+      <p style="display:flex;gap:8px;align-items:center;margin:0 0 6px">${syncText}</p>
+      <p class="small muted" style="margin:0">${esc(sec.name)} mirrors ${esc(m.name)}${sync.auto?.enabled ? ", synced automatically" : ""}. Checked ${fmt.ago(sync.checked)}.</p>
+      <h3 style="margin-top:18px">Recent events</h3>
+      ${eventsList(events.slice(0, 8))}
+    </section>`;
+}
+
+// Replace an element (found by the id in `html`) only when its content changed, so a
+// refresh doesn't disturb what you're looking at or reading.
+const drawn = new Map(); // element id -> the HTML last put there
+function patch(html) {
+  const id = html.match(/id="([^"]+)"/)[1];
+  const node = document.getElementById(id);
+  if (node && drawn.get(id) !== html) {
+    node.outerHTML = html;
+    drawn.set(id, html);
+  }
+}
+
 async function overview(el) {
   const here = alive();
+  const s = state.status;
+  if (!s) return;
+  let dayAt = 0;
+  drawn.clear();
+  el.innerHTML = `
+    <div id="ov-strip"></div>
+    <div id="ov-alerts"></div>
+    <div class="grid cols-2"><section id="card-main"></section><section id="card-secondary"></section></div>
+    <div class="grid cols-2">
+      <section class="card fill" id="day-card">
+        <div class="card-head"><h2>Last 24 hours</h2><span class="muted small">both Pi-holes</span><div class="right"><a href="#history">History →</a></div></div>
+        <p class="empty">Loading…</p>
+      </section>
+      <section id="ov-sync"></section>
+    </div>`;
   const draw = async () => {
     const s = state.status;
     if (!s) return;
     const [m, sec] = s.piholes;
     const events = await api("/api/events?limit=25");
     if (!here()) return;
-    const alerts = s.alerts.length
-      ? `<div class="banner bad"><b>${s.alerts.length} active alert${s.alerts.length > 1 ? "s" : ""}</b><ul>${s.alerts.map((a) => `<li><b>${esc(a.title)}</b> – ${esc(a.detail)} <span class="muted">(since ${fmt.dateTime(a.since)})</span></li>`).join("")}</ul></div>`
-      : "";
-    const sync = s.sync;
-    const syncText = sync.error ? `<span class="dot bad"></span>Couldn't compare: ${esc(sync.error)}`
-      : !sync.checked ? `<span class="muted">Not checked yet</span>`
-      : sync.auto?.held ? `<span class="dot bad"></span>Auto-sync waiting for you: ${esc(sync.summary)}`
-      : sync.count ? `<span class="dot warn"></span>${esc(sync.summary)}` : `<span class="dot ok"></span>In sync`;
-    el.innerHTML = `
-      ${alerts}
-      <div class="grid cols-2">${piholeCard(m, sec)}${piholeCard(sec, m)}</div>
-      <div class="grid cols-2">
-        <section class="card fill" id="day-card">
-          <div class="card-head"><h2>Last 24 hours</h2><div class="right"><a href="#history">History →</a></div></div>
-          <p class="empty">Loading…</p>
-        </section>
-        <section class="card">
-          <div class="card-head"><h2>Sync</h2><div class="right"><a href="#sync">Review →</a></div></div>
-          <p style="display:flex;gap:8px;align-items:center;margin:0 0 6px">${syncText}</p>
-          <p class="small muted" style="margin:0">${esc(sec.name)} mirrors ${esc(m.name)}${sync.auto?.enabled ? ", synced automatically" : ""}. Checked ${fmt.ago(sync.checked)}.</p>
-          <h3 style="margin-top:18px">Recent events</h3>
-          ${eventsList(events.slice(0, 8))}
-        </section>
-      </div>`;
-    const [hist, top] = await Promise.all([api("/api/history?range=24h"), api("/api/top?days=1&limit=5")]);
-    if (!here()) return;
-    dayCard($("#day-card"), hist, top);
+    patch(statusStrip(s));
+    patch(alertsBanner(s));
+    patch(piholeCard(m, sec));
+    patch(piholeCard(sec, m));
+    patch(syncCard(s, m, sec, events));
+    // The 24-hour totals move every 10 minutes, so they're fetched less often than the status.
+    if (Date.now() - dayAt > 60000) {
+      const [hist, top] = await Promise.all([api("/api/history?range=24h"), api("/api/top?days=1&limit=5")]);
+      if (!here()) return;
+      dayAt = Date.now();
+      dayCard($("#day-card"), hist, top);
+    }
+  };
+  el.onclick = (e) => {
+    const b = e.target.closest("[data-block]");
+    if (b) { b.disabled = true; return setBlocking(b.dataset.block, "both"); }
+    const j = e.target.closest("[data-jump]");
+    if (j) { e.preventDefault(); document.getElementById(j.dataset.jump)?.scrollIntoView({ behavior: "smooth" }); }
   };
   await draw();
-  live(async () => {
-    state.charts.forEach((c) => c.destroy());
-    state.charts = [];
-    await draw();
-  });
+  live(draw);
 }
 
-function dayCard(card, hist, top) {
+function dayStats(hist) {
   const byT = new Map();
   let total = 0, blocked = 0;
   for (const p of hist.piholes) {
@@ -403,26 +506,46 @@ function dayCard(card, hist, top) {
   let peak = null;
   for (const [t, n] of byT) if (!peak || n > peak.n) peak = { t, n };
   const hourly = byT.size ? Math.round(total / (byT.size * hist.step / 3600)) : null;
-  const swatch = (color, dashed) => `<i class="swatch${dashed ? " dashed" : ""}" style="--c:${color}"></i>`;
-  card.innerHTML = `
-    <div class="card-head"><h2>Last 24 hours</h2><span class="muted small">both Pi-holes</span><div class="right"><a href="#history">History →</a></div></div>
-    <div class="stats cols-4">
+  return `
       <div class="stat"><b>${fmt.num(total)}</b><span>queries</span></div>
       <div class="stat"><b>${fmt.num(blocked)}</b><span>blocked (${total ? fmt.pct((100 * blocked) / total) : "–"})</span></div>
       <div class="stat"><b>${fmt.num(hourly)}</b><span>per hour, average</span></div>
-      <div class="stat"><b>${peak ? fmt.num(peak.n) : "–"}</b><span>peak 10 min${peak ? `, ${new Date(peak.t * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}</span></div>
-    </div>
+      <div class="stat"><b>${peak ? fmt.num(peak.n) : "–"}</b><span>peak 10 min${peak ? `, ${new Date(peak.t * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}</span></div>`;
+}
+
+function dayTops(top) {
+  return `
+    <h3 style="margin-top:16px">Yesterday's top <span class="muted small" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(top.last_day)}</span></h3>
+    <div class="grid cols-2">
+      <div>${topTable(top.blocked, "Blocked domain")}</div>
+      <div>${topTable(top.clients, "Client", true)}</div>
+    </div>`;
+}
+
+// Draws the 24-hour card the first time, then only updates its numbers and chart data.
+function dayCard(card, hist, top) {
+  const chart = state.charts.find((c) => c.canvas && card.contains(c.canvas));
+  if (chart) {
+    $(".stats", card).innerHTML = dayStats(hist);
+    const tops = dayTops(top);
+    if (drawn.get("day-tops") !== tops) { $(".tops", card).innerHTML = tops; drawn.set("day-tops", tops); }
+    chart.data.datasets = historyDatasets(hist, true);
+    chart.options.scales.x = timeAxis(hist, true);
+    chart.update("none");
+    return;
+  }
+  const swatch = (color, dashed) => `<i class="swatch${dashed ? " dashed" : ""}" style="--c:${color}"></i>`;
+  card.innerHTML = `
+    <div class="card-head"><h2>Last 24 hours</h2><span class="muted small">both Pi-holes</span><div class="right"><a href="#history">History →</a></div></div>
+    <div class="stats cols-4">${dayStats(hist)}</div>
     <div class="chart-box grow"><canvas></canvas></div>
     <div class="legend">
       ${hist.piholes.map((p) => `<span>${swatch(colorFor(p.id))}${esc(byId(p.id)?.name || p.name)}</span>`).join("")}
       <span class="muted">${swatch("var(--muted)")}all queries</span>
       <span class="muted">${swatch("var(--muted)", true)}blocked</span>
     </div>
-    <h3 style="margin-top:16px">Yesterday's top <span class="muted small" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(top.last_day)}</span></h3>
-    <div class="grid cols-2">
-      <div>${topTable(top.blocked, "Blocked domain")}</div>
-      <div>${topTable(top.clients, "Client", true)}</div>
-    </div>`;
+    <div class="tops">${dayTops(top)}</div>`;
+  drawn.set("day-tops", dayTops(top));
   historyChart($("canvas", card), hist, { compact: true });
 }
 
@@ -430,7 +553,8 @@ function eventsList(events) {
   if (!events.length) return `<p class="empty">Nothing yet</p>`;
   const icon = { alert: "bad", recovered: "ok", sync: "warn", action: "unknown", info: "unknown" };
   return `<ul class="events">${events.map((e) => `
-    <li><time>${fmt.dateTime(e.ts)}</time><span><span class="dot ${icon[e.kind] || "unknown"}"></span> ${esc(e.message)}</span></li>`).join("")}</ul>`;
+    <li><time>${fmt.dateTime(e.ts)}</time><span><span class="dot ${icon[e.kind] || "unknown"}"></span> ${esc(e.message)}${e.detail
+      ? `<details><summary>${e.detail.split("\n").length} item${e.detail.split("\n").length > 1 ? "s" : ""}</summary><div class="small detail">${esc(e.detail).replace(/\n/g, "<br>")}</div></details>` : ""}</span></li>`).join("")}</ul>`;
 }
 
 // ---------- history ----------------------------------------------------------------
@@ -501,11 +625,7 @@ function latencyChart(canvas, hist) {
   }));
 }
 
-function historyChart(canvas, hist, { compact = false } = {}) {
-  if (typeof Chart === "undefined") {
-    canvas.parentElement.innerHTML = `<p class="empty">Chart library missing (static/vendor/chart.umd.min.js)</p>`;
-    return;
-  }
+function historyDatasets(hist, compact) {
   const datasets = [];
   for (const p of hist.piholes) {
     const color = colorFor(p.id);
@@ -513,6 +633,15 @@ function historyChart(canvas, hist, { compact = false } = {}) {
     datasets.push({ label: `${name} – queries`, kind: "total", data: p.points.map((x) => ({ x: x.t * 1000, y: x.total })), borderColor: color, backgroundColor: color + "22", fill: !compact, borderWidth: 1.6, pointRadius: 0, tension: 0.25 });
     datasets.push({ label: `${name} – blocked`, kind: "blocked", data: p.points.map((x) => ({ x: x.t * 1000, y: x.blocked })), borderColor: color, borderDash: [4, 3], borderWidth: 1.4, pointRadius: 0, tension: 0.25 });
   }
+  return datasets;
+}
+
+function historyChart(canvas, hist, { compact = false } = {}) {
+  if (typeof Chart === "undefined") {
+    canvas.parentElement.innerHTML = `<p class="empty">Chart library missing (static/vendor/chart.umd.min.js)</p>`;
+    return;
+  }
+  const datasets = historyDatasets(hist, compact);
   const grid = css("--line"), text = css("--muted");
   const chart = new Chart(canvas, {
     type: "line",
@@ -640,7 +769,7 @@ async function queries(el) {
   };
   const draw = () => {
     const text = f.text.toLowerCase();
-    const rows = (state.queries?.queries || []).filter((q) => {
+    let rows = (state.queries?.queries || []).filter((q) => {
       const blocked = BLOCKED.has(q.status);
       if (f.status === "blocked" && !blocked) return false;
       if (f.status === "allowed" && blocked) return false;
@@ -649,20 +778,24 @@ async function queries(el) {
     });
     $("#qcount").textContent = `${rows.length} of ${state.queries?.queries.length || 0} recent queries${clients.length ? ` from ${device}` : ""}`;
     if (!rows.length) { $("#qtable").innerHTML = `<p class="empty">No matching queries</p>`; return; }
+    const more = rows.length - shown;
+    rows = rows.slice(0, shown);
     const off = writesOff() ? "disabled title='Read-only mode'" : "";
-    $("#qtable").innerHTML = `<table><thead><tr><th>Time</th><th>Pi-hole</th><th>Client</th><th>Domain</th><th>Type</th><th>Status</th><th class="num">Reply</th><th></th></tr></thead><tbody>${rows.map((q) => {
+    $("#qtable").innerHTML = `<table class="qlog"><thead><tr><th>Time</th><th>Pi-hole</th><th>Client</th><th>Domain</th><th>Type</th><th>Status</th><th class="num">Reply</th><th></th></tr></thead><tbody>${rows.map((q) => {
       const blocked = BLOCKED.has(q.status);
       return `<tr>
-        <td class="mono">${fmt.time(q.time)}</td><td>${chip(q.pihole)}</td>
-        <td>${esc(q.client_name || q.client)}${q.client_name ? `<div class="muted small mono">${esc(q.client)}</div>` : ""}</td>
-        <td class="break">${esc(q.domain)}</td><td class="mono">${esc(q.type)}</td>
-        <td><span class="pill ${blocked ? "bad" : "ok"}">${esc((q.status || "").toLowerCase().replace(/_/g, " "))}</span></td>
-        <td class="num mono">${q.reply_ms} ms</td>
-        <td class="actions"><button class="btn small" ${off} data-qact="${blocked ? "allow" : "deny"}" data-domain="${esc(q.domain)}">${blocked ? "Allow" : "Block"}</button></td>
+        <td class="mono q-time">${fmt.time(q.time)}</td><td class="q-pi">${chip(q.pihole)}</td>
+        <td class="q-client">${esc(q.client_name || q.client)}${q.client_name ? `<div class="muted small mono">${esc(q.client)}</div>` : ""}</td>
+        <td class="break q-domain">${esc(q.domain)}</td><td class="mono q-type">${esc(q.type)}</td>
+        <td class="q-status"><span class="pill ${blocked ? "bad" : "ok"}">${esc((q.status || "").toLowerCase().replace(/_/g, " "))}</span></td>
+        <td class="num mono q-reply">${q.reply_ms} ms</td>
+        <td class="actions q-act"><button class="btn small" ${off} data-qact="${blocked ? "allow" : "deny"}" data-domain="${esc(q.domain)}">${blocked ? "Allow" : "Block"}</button></td>
       </tr>`;
-    }).join("")}</tbody></table>`;
+    }).join("")}</tbody></table>${more > 0 ? `<p style="text-align:center"><button class="btn" id="qmore">Show ${Math.min(more, PAGE)} more</button></p>` : ""}`;
   };
-  $("#qtext").oninput = (e) => { f.text = e.target.value; draw(); };
+  const PAGE = 100;
+  let shown = PAGE;
+  $("#qtext").oninput = (e) => { f.text = e.target.value; shown = PAGE; draw(); };
   $("#qstatus").onchange = (e) => { f.status = e.target.value; draw(); };
   $("#qpihole").onchange = (e) => { f.pihole = e.target.value; draw(); };
   $("#qreload").onclick = load;
@@ -671,6 +804,7 @@ async function queries(el) {
     await load();
   });
   $("#qtable").onclick = async (e) => {
+    if (e.target.id === "qmore") { shown += PAGE; return draw(); }
     const b = e.target.closest("[data-qact]");
     if (!b) return;
     const type = b.dataset.qact, domain = b.dataset.domain;
@@ -1110,16 +1244,7 @@ async function actions(el) {
     const t = e.target.closest('[data-seg="target"] button');
     if (t) { state.target = t.dataset.v; return draw(); }
     const b = e.target.closest("[data-block]");
-    if (b) {
-      const v = b.dataset.block;
-      const body = v === "on" ? { target: state.target, enabled: true } : v === "off" ? { target: state.target, enabled: false } : { target: state.target, enabled: false, minutes: Number(v) };
-      try {
-        const r = await api("/api/actions/blocking", { body });
-        const failed = r.results.filter((x) => !x.ok);
-        failed.length ? toast(failed.map((x) => x.error).join(" · "), true) : toast("Done");
-      } catch (err) { toast(err.message, true); }
-      forceTick();
-    }
+    if (b) await setBlocking(b.dataset.block, state.target);
     if (e.target.id === "gravrun") {
       try {
         await api("/api/actions/gravity", { body: { target: state.target } });

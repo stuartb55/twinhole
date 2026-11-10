@@ -18,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import config, devices, dnsprobe, releases
+from .guard import GuardMiddleware
 from .alerts import URGENT, AlertManager, NoNotifier, Notifier, Ntfy
+from .heartbeat import Heartbeat
 from .history import History
 from .monitor import LatestRelease, Monitor, Probe, VersionQuery
 from .pihole import Pihole, PiholeError
@@ -52,6 +54,7 @@ class Twinhole:
         clock: Callable[[], float] = time.time,
         version_query: VersionQuery = dnsprobe.server_version,
         latest_unbound: LatestRelease = releases.latest_unbound,
+        heartbeat_transport: httpx.AsyncBaseTransport | None = None,
     ):
         transports = transports or {}
         self.settings = settings
@@ -67,7 +70,10 @@ class Twinhole:
                 notifier = NoNotifier()
         self.notifier = notifier
         self.alerts = AlertManager(self.store, notifier, clock)
-        self.monitor = Monitor(settings, self.piholes, self.alerts, probe, clock, version_query, latest_unbound)
+        self.heartbeat = Heartbeat(settings.heartbeat_url, settings.heartbeat_interval, clock, heartbeat_transport)
+        self.monitor = Monitor(
+            settings, self.piholes, self.alerts, probe, clock, version_query, latest_unbound, self.heartbeat
+        )
         self.history = History(settings, self.piholes, self.store, clock)
         self.gravity = GravityRunner(self.store)
         self.sync = SyncService(settings, self.main, self.secondary, self.store, self.alerts, self.gravity)
@@ -107,6 +113,7 @@ class Twinhole:
             await p.aclose()
         if isinstance(self.notifier, Ntfy):
             await self.notifier.aclose()
+        await self.heartbeat.aclose()
         self.store.close()
 
 
@@ -214,7 +221,8 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
         finally:
             await th.stop()
 
-    app = FastAPI(title="twinhole", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="twinhole", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(GuardMiddleware, allowed_hosts=settings.allowed_hosts)
 
     def th() -> Twinhole:
         return app.state.th
@@ -249,6 +257,8 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
             "sync": {k: last[k] for k in ("checked", "summary", "error", "auto")} | {"count": len(last["changes"])},
             "gravity": t.gravity.status(),
             "check_interval": settings.check_interval,
+            "unsent_alerts": len(t.alerts.outbox),
+            "heartbeat": t.heartbeat.status(),
         }
 
     @app.get("/api/events")

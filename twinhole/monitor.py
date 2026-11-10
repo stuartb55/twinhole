@@ -18,6 +18,7 @@ from typing import Any
 from . import devices, dnsprobe, releases
 from .alerts import DEFAULT, LOW, URGENT, AlertManager
 from .config import Settings
+from .heartbeat import Heartbeat
 from .pihole import Pihole, PiholeError
 
 log = logging.getLogger(__name__)
@@ -118,8 +119,10 @@ class Monitor:
         clock: Callable[[], float] = time.time,
         version_query: VersionQuery = dnsprobe.server_version,
         latest_unbound: LatestRelease = releases.latest_unbound,
+        heartbeat: Heartbeat | None = None,
     ):
         self.settings = settings
+        self.heartbeat = heartbeat
         self.piholes = piholes
         self.alerts = alerts
         self.probe = probe
@@ -162,6 +165,9 @@ class Monitor:
     async def run_cycle(self) -> None:
         await asyncio.gather(*(self._check(p) for p in self.piholes))
         self.last_cycle = self.clock()
+        await self.alerts.flush()
+        if self.heartbeat is not None:
+            await self.heartbeat.beat()
 
     def stop(self) -> None:
         for task in self._expiry.values():
@@ -214,6 +220,12 @@ class Monitor:
         now = self.clock()
         st = self.status[p.id]
 
+        # The DNS lookups start first and run alongside the API reads, so a Pi-hole whose
+        # web API hangs still has its DNS checked (and alerted on) on time.
+        v4_task = asyncio.ensure_future(self.probe(p.cfg.dns_host, p.cfg.dns_port, s.dns_probe_domain, s.dns_timeout))
+        v6 = self._ipv6_target(p)
+        v6_task = asyncio.ensure_future(self.probe(v6, p.cfg.dns_port, s.dns_probe_domain, s.dns_timeout)) if v6 else None
+
         summary = blocking = None
         try:
             summary, blocking = await asyncio.gather(p.summary(), p.blocking())
@@ -238,13 +250,10 @@ class Monitor:
             await self._slow_refresh(p, st)
             self._slow_due[p.id] = now + SLOW_REFRESH
 
-        v6 = self._ipv6_target(p)
-        probes = [self.probe(p.cfg.dns_host, p.cfg.dns_port, s.dns_probe_domain, s.dns_timeout)]
-        if v6:
-            probes.append(self.probe(v6, p.cfg.dns_port, s.dns_probe_domain, s.dns_timeout))
-        results = await asyncio.gather(*probes)
-        r4 = results[0]
-        r6 = results[1] if v6 else None
+        if v6_task is None and (v6 := self._ipv6_target(p)):  # address only just found (first check)
+            v6_task = asyncio.ensure_future(self.probe(v6, p.cfg.dns_port, s.dns_probe_domain, s.dns_timeout))
+        r4 = await v4_task
+        r6 = await v6_task if v6_task else None
 
         st["checked"] = int(now)
         st["api"] = {"ok": api_error is None, "error": api_error}

@@ -94,9 +94,24 @@ h3 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; te
 .pihole-card { border-top: 3px solid var(--c); }
 .pihole-card .title { display: flex; align-items: baseline; gap: 8px; }
 .pihole-card .title h2 { margin: 0; font-size: 17px; }
-.kv { display: grid; grid-template-columns: 130px 1fr; gap: 7px 12px; margin: 14px 0 0; }
+.kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 7px 12px; margin: 14px 0 0; }
 .kv dt { color: var(--muted); }
-.kv dd { margin: 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.kv dd .dot { margin-right: 6px; vertical-align: 0; }
+.kv dd .mono { word-break: break-all; }
+.reasons { font-size: 12.5px; font-weight: 500; margin: 4px 0 2px; }
+.reasons.warn, .warn-text { color: var(--warn); } .reasons.bad, .bad-text { color: var(--bad); }
+.outdated { color: var(--warn); font-weight: 600; }
+
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 16px; margin-bottom: 14px; }
+.strip-who { display: flex; flex-wrap: wrap; gap: 6px 20px; }
+.strip .who { color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
+.strip .who:hover { text-decoration: none; }
+.strip-block { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.strip > .small { flex-basis: 100%; }
+.events details { margin-top: 2px; }
+.events summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.events .detail { color: var(--muted); padding: 2px 0 0 14px; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
 .stat { background: var(--panel-2); border-radius: 8px; padding: 9px 11px; }
 .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
@@ -134,8 +149,8 @@ button.btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: 
 button.btn.danger { color: var(--bad); }
 button.btn.small { padding: 2px 8px; font-size: 12px; }
 button:disabled { opacity: .45; cursor: not-allowed; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
-.seg button { border: 0; background: var(--panel); color: var(--muted); font: inherit; padding: 5px 11px; cursor: pointer; }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; max-width: 100%; }
+.seg button { border: 0; background: var(--panel); color: var(--muted); font: inherit; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
 
@@ -157,7 +172,7 @@ th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; background: var(--panel); position: sticky; top: 0; }
 tbody tr:hover { background: var(--panel-2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-td.break { word-break: break-all; }
+td.break { overflow-wrap: anywhere; }
 td.actions { white-space: nowrap; text-align: right; }
 
 .events { list-style: none; margin: 0; padding: 0; }
@@ -197,3 +212,35 @@ td.actions { white-space: nowrap; text-align: right; }
 .switch input:checked + span { background: var(--ok); }
 .switch input:checked + span::after { transform: translateX(14px); }
 .switch input:disabled + span { cursor: not-allowed; opacity: .5; }
+
+/* ---------- phones ---------- */
+@media (max-width: 600px) {
+  header { padding: 8px 12px; gap: 4px 12px; }
+  header nav { order: 3; flex: 1 1 100%; margin: 0 -6px; }
+  header nav button { padding: 5px 8px; white-space: nowrap; }
+  main { padding: 12px 10px 48px; }
+  .card { padding: 13px; }
+  .kv { grid-template-columns: 92px minmax(0, 1fr); gap: 6px 10px; }
+  .strip-block { margin-left: 0; }
+  .events li { grid-template-columns: 1fr; gap: 0; }
+  .subnav .seg button { flex: 1 1 auto; }
+}
+
+/* The query log as stacked rows on narrow screens: time, Pi-hole, status and action on
+   top, the domain in full under them, then the client and reply time. */
+@media (max-width: 760px) {
+  table.qlog thead { display: none; }
+  table.qlog tr {
+    display: grid; grid-template-columns: auto auto 1fr auto; column-gap: 8px; align-items: center;
+    grid-template-areas: "time pi status act" "domain domain domain domain" "client client type reply";
+    padding: 8px 2px; border-bottom: 1px solid var(--line);
+  }
+  table.qlog td { border: 0; padding: 1px 0; }
+  table.qlog .q-time { grid-area: time; } table.qlog .q-pi { grid-area: pi; }
+  table.qlog .q-status { grid-area: status; } table.qlog .q-act { grid-area: act; }
+  table.qlog .q-domain { grid-area: domain; font-weight: 500; padding: 3px 0; }
+  table.qlog .q-client { grid-area: client; font-size: 12.5px; }
+  table.qlog .q-client div { display: inline; margin-left: 6px; }
+  table.qlog .q-type { grid-area: type; color: var(--muted); }
+  table.qlog .q-reply { grid-area: reply; color: var(--muted); }
+}
