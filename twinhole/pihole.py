@@ -139,11 +139,23 @@ class Pihole:
         params = {"max_devices": 1000, "max_addresses": 25}
         return (await self._request("GET", "/network/devices", params=params, timeout=30))["devices"]
 
-    async def queries(self, length: int, client_ip: str | None = None) -> list[dict[str, Any]]:
+    async def queries(
+        self, length: int, client_ip: str | None = None, domain: str | None = None
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"length": length}
         if client_ip:
             params["client_ip"] = client_ip
+        if domain:
+            params["domain"] = domain
         return (await self._request("GET", "/queries", params=params))["queries"]
+
+    async def search(self, domain: str) -> dict[str, Any]:
+        """Every allow/deny rule, regex and adlist entry that matches the domain (ABP entries
+        such as ||example.com^ match its parent domains too)."""
+        return (await self._request("GET", f"/search/{_seg(domain)}", params={"N": 100}))["search"]
+
+    async def config(self) -> dict[str, Any]:
+        return (await self._request("GET", "/config"))["config"]
 
     async def groups(self) -> list[dict[str, Any]]:
         return (await self._request("GET", "/groups"))["groups"]

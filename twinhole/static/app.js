@@ -78,7 +78,7 @@ const state = {
   statusAt: 0, // Date.now() when state.status arrived, to count timers down between fetches
 };
 
-const pages = { overview, history, queries, devices, sync, manage, actions };
+const pages = { overview, history, queries, lookup, devices, sync, manage, actions };
 
 function piholes() { return state.status ? state.status.piholes : []; }
 function byId(id) { return piholes().find((p) => p.id === id); }
@@ -430,9 +430,17 @@ function syncCard(s, m, sec, events) {
       <div class="card-head"><h2>Sync</h2><div class="right"><a href="#sync">Review →</a></div></div>
       <p style="display:flex;gap:8px;align-items:center;margin:0 0 6px">${syncText}</p>
       <p class="small muted" style="margin:0">${esc(sec.name)} mirrors ${esc(m.name)}${sync.auto?.enabled ? ", synced automatically" : ""}. Checked ${fmt.ago(sync.checked)}.</p>
+      <p style="display:flex;gap:8px;align-items:center;margin:10px 0 0">${settingsText(s.settings)}</p>
       <h3 style="margin-top:18px">Recent events</h3>
       ${eventsList(events.slice(0, 8))}
     </section>`;
+}
+
+function settingsText(st) {
+  if (!st || !st.checked) return `<span class="muted">Settings not compared yet</span>`;
+  if (st.error && !st.differences) return `<span class="dot bad"></span>Couldn't compare settings: ${esc(st.error)}`;
+  return st.differences ? `<span class="dot warn"></span><a href="#sync">${st.differences} setting${st.differences > 1 ? "s" : ""} differ between the Pi-holes</a>`
+    : `<span class="dot ok"></span>Settings match`;
 }
 
 // Replace an element (found by the id in `html`) only when its content changed, so a
@@ -456,6 +464,7 @@ async function overview(el) {
   el.innerHTML = `
     <div id="ov-strip"></div>
     <div id="ov-alerts"></div>
+    ${lookupForm("ov-lookup", "", true)}
     <div class="grid cols-2"><section id="card-main"></section><section id="card-secondary"></section></div>
     <div class="grid cols-2">
       <section class="card fill" id="day-card">
@@ -483,6 +492,7 @@ async function overview(el) {
       dayCard($("#day-card"), hist, top);
     }
   };
+  lookupSubmit($("#ov-lookup"));
   el.onclick = (e) => {
     const b = e.target.closest("[data-block]");
     if (b) { b.disabled = true; return setBlocking(b.dataset.block, "both"); }
@@ -677,11 +687,15 @@ function seg(name, options, current) {
   return `<div class="seg" data-seg="${name}">${options.map(([v, l]) => `<button data-v="${esc(v)}" class="${String(v) === String(current) ? "active" : ""}">${esc(l)}</button>`).join("")}</div>`;
 }
 
+function lookupLink(domain, text = domain) {
+  return `<a href="#lookup?domain=${encodeURIComponent(domain)}" title="Why is this blocked or allowed?">${esc(text)}</a>`;
+}
+
 function topTable(rows, label, showLabel = false) {
   if (!rows.length) return `<p class="empty">No data yet</p>`;
   const max = rows[0].count || 1;
   return `<table><thead><tr><th>${label}</th><th class="num">Queries</th></tr></thead><tbody>${rows.map((r) => `
-    <tr><td class="break">${esc(r.item)}${showLabel && r.label ? ` <span class="muted">${esc(r.label)}</span>` : ""}
+    <tr><td class="break">${showLabel ? esc(r.item) : lookupLink(r.item)}${showLabel && r.label ? ` <span class="muted">${esc(r.label)}</span>` : ""}
       <div style="height:3px;background:var(--accent);opacity:.35;border-radius:2px;margin-top:3px;width:${(100 * r.count) / max}%"></div></td>
     <td class="num">${fmt.num(r.count)}</td></tr>`).join("")}</tbody></table>`;
 }
@@ -789,7 +803,7 @@ async function queries(el) {
         <td class="break q-domain">${esc(q.domain)}</td><td class="mono q-type">${esc(q.type)}</td>
         <td class="q-status"><span class="pill ${blocked ? "bad" : "ok"}">${esc((q.status || "").toLowerCase().replace(/_/g, " "))}</span></td>
         <td class="num mono q-reply">${q.reply_ms} ms</td>
-        <td class="actions q-act"><button class="btn small" ${off} data-qact="${blocked ? "allow" : "deny"}" data-domain="${esc(q.domain)}">${blocked ? "Allow" : "Block"}</button></td>
+        <td class="actions q-act"><a class="btn small" href="#lookup?domain=${encodeURIComponent(q.domain || "")}" title="Which rule blocks or allows this?">Why?</a> <button class="btn small" ${off} data-qact="${blocked ? "allow" : "deny"}" data-domain="${esc(q.domain)}">${blocked ? "Allow" : "Block"}</button></td>
       </tr>`;
     }).join("")}</tbody></table>${more > 0 ? `<p style="text-align:center"><button class="btn" id="qmore">Show ${Math.min(more, PAGE)} more</button></p>` : ""}`;
   };
@@ -812,6 +826,166 @@ async function queries(el) {
     await edit({ resource: "domains", action: "add", key: [type, "exact", domain], comment: "Added from the twinhole query log" });
   };
   await load();
+}
+
+// ---------- lookup ------------------------------------------------------------------
+
+// The "why is this blocked?" form, on the Overview (compact) and the Lookup page.
+function lookupForm(id, value = "", compact = false) {
+  return `<form class="${compact ? "card lookup-bar" : "inline lookup-form"}" id="${id}" autocomplete="off">
+    ${compact ? `<label for="${id}-q">Why is a domain blocked?</label>` : ""}
+    <input type="search" id="${id}-q" name="domain" required placeholder="ads.example.com or a web address" value="${esc(value)}">
+    <button class="btn ${compact ? "" : "primary"}" type="submit">Look up</button>
+  </form>`;
+}
+function lookupSubmit(form) {
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const d = form.elements.domain.value.trim();
+    if (d) location.hash = `lookup?domain=${encodeURIComponent(d)}`;
+  };
+}
+
+const VERDICT = {
+  blocked: ["bad", "Blocked"],
+  allowed: ["ok", "Allowed by a rule"],
+  not_blocked: ["ok", "Not blocked"],
+  mixed: ["warn", "Depends on the device's group"],
+};
+
+function ruleSource(r) {
+  if (r.source === "adlist") {
+    return `${r.action === "block" ? "Blocklist" : "Allowlist"} <span class="mono break">${esc(r.list)}</span>${r.comment ? ` <span class="muted">(${esc(r.comment)})</span>` : ""}`;
+  }
+  return `${r.source === "regex" ? "Regex" : "Exact"} ${r.action} rule${r.comment ? ` <span class="muted">(${esc(r.comment)})</span>` : ""}`;
+}
+
+function ruleShort(r) {
+  if (r.source === "adlist") {
+    return `${r.action === "block" ? "blocklist" : "allowlist"} <span class="mono break">${esc(r.list)}</span>${r.entry.startsWith("||") ? ` (entry <span class="mono">${esc(r.entry)}</span>)` : ""}`;
+  }
+  return `${r.source} ${r.action} rule${r.source === "regex" ? ` <span class="mono break">${esc(r.entry)}</span>` : ""}`;
+}
+
+function verdictLine(v, rules) {
+  if (v.status === "mixed") {
+    const by = (g) => (g.by == null ? "no rule matches" : `by the ${ruleShort(rules[g.by])}`);
+    return `<ul class="small verdict-groups">${v.groups.map((g) => `<li><b>${esc(g.group)}</b>: ${esc(VERDICT[g.status][1].toLowerCase())}, ${by(g)}</li>`).join("")}</ul>`;
+  }
+  if (v.by == null) return `<p class="small muted">No rule, regex or adlist entry matches it, so Pi-hole looks it up as normal.</p>`;
+  return `<p class="small">Decided by the ${ruleShort(rules[v.by])}.</p>`;
+}
+
+function lookupCard(v) {
+  if (v.error) return `<section class="card"><div class="card-head"><h2>${esc(v.name)}</h2></div><div class="banner bad">Couldn't read it: ${esc(v.error)}</div></section>`;
+  const [level, label] = VERDICT[v.verdict.status];
+  const p = byId(v.id);
+  const decided = new Set(v.verdict.groups.map((g) => g.by).filter((b) => b != null));
+  return `<section class="card pihole-card" style="--c:${p?.role === "secondary" ? "var(--c-sec)" : "var(--c-main)"}">
+    <div class="title"><h2>${esc(v.name)}</h2><span class="pill ${level}" style="margin-left:auto"><span class="dot ${level}"></span>${label}</span></div>
+    ${verdictLine(v.verdict, v.rules)}
+    ${v.rules.length ? `<h3 style="margin-top:14px">Matching rules, in the order Pi-hole checks them</h3>
+    <ol class="rules">${v.rules.map((r, i) => `<li class="${r.active ? "" : "inactive"}">
+        <div>${decided.has(i) ? `<span class="pill ${r.action === "block" ? "bad" : "ok"}">decides</span> ` : ""}${ruleSource(r)}${r.active ? "" : ` <span class="pill">${r.enabled ? "group off" : "disabled"}</span>`}</div>
+        <div class="small muted">Entry <span class="mono break">${esc(r.entry)}</span> · ${r.groups.length > 1 ? "groups" : "group"} ${esc(r.groups.join(", ") || "none")}</div>
+      </li>`).join("")}</ol>` : ""}
+  </section>`;
+}
+
+function lookupActions(r) {
+  const views = r.piholes.filter((v) => v.verdict);
+  if (!views.length) return "";
+  const statuses = views.map((v) => v.verdict.status);
+  const off = writesOff() ? "disabled title='Read-only mode: set ALLOW_WRITES=true'" : "";
+  const canAllow = statuses.some((s) => s === "blocked" || s === "mixed");
+  const canBlock = statuses.some((s) => s !== "blocked");
+  const help = canAllow
+    ? "Allow removes an exact block rule for this domain, and adds an exact allow rule if a list or regex would still block it."
+    : "Block adds an exact block rule, in place of any exact allow rule.";
+  return `<div class="lookup-actions">
+    ${canAllow ? `<button class="btn primary" data-lact="allow" ${off}>Allow on both Pi-holes</button>` : ""}
+    ${canBlock ? `<button class="btn ${canAllow ? "" : "danger"}" data-lact="block" ${off}>Block on both Pi-holes</button>` : ""}
+    <span class="small muted">${help} New rules go in the Default group.</span>
+  </div>`;
+}
+
+function lookupSummary(r) {
+  const views = r.piholes.filter((v) => v.verdict);
+  if (!views.length) return `<div class="banner bad">Neither Pi-hole could be read.</div>`;
+  const name = `<b class="mono">${esc(r.domain)}</b>`;
+  if (!r.agree) {
+    const does = { blocked: "blocks it", allowed: "allows it by a rule", not_blocked: "doesn't block it", mixed: "blocks it for some groups" };
+    return `<div class="banner warn">The Pi-holes don't agree on ${name}: ${views.map((v) => `${esc(v.name)} ${does[v.verdict.status]}`).join(", ")}. Sync copies ${esc(r.piholes[0].name)}'s rules to ${esc(r.piholes[1].name)}, so check <a href="#sync">Sync</a> if this stays.</div>`;
+  }
+  const st = views[0].verdict.status;
+  const where = views.length === r.piholes.length ? "on both Pi-holes" : `on ${esc(views[0].name)}`;
+  const text = { blocked: "is blocked", allowed: "is allowed by a rule", not_blocked: "isn't blocked", mixed: "is blocked for some groups and not others" }[st];
+  return `<div class="banner ${st === "blocked" ? "bad" : st === "mixed" ? "warn" : "info"}">${name} ${text} ${where}.</div>`;
+}
+
+function recentTable(rows, domain) {
+  if (!rows.length) return `<p class="empty">No recent queries for ${esc(domain)} on either Pi-hole. Pi-hole keeps the last 24 hours in memory.</p>`;
+  return `<div class="table-wrap"><table class="qlog recent"><thead><tr><th>Time</th><th>Pi-hole</th><th>Client</th><th>Type</th><th>Status</th></tr></thead><tbody>${rows.map((q) => {
+    const blocked = BLOCKED.has(q.status);
+    return `<tr><td class="mono q-time">${fmt.dateTime(q.time)}</td><td class="q-pi">${chip(q.pihole)}</td>
+      <td class="q-client">${esc(q.client_name || q.client)}${q.client_name ? `<div class="muted small mono">${esc(q.client)}</div>` : ""}</td>
+      <td class="mono q-type">${esc(q.type)}</td>
+      <td class="q-status"><span class="pill ${blocked ? "bad" : "ok"}">${esc((q.status || "").toLowerCase().replace(/_/g, " "))}</span></td></tr>`;
+  }).join("")}</tbody></table></div>`;
+}
+
+async function lookup(el) {
+  const here = alive();
+  const domain = hashParams().get("domain") || "";
+  el.innerHTML = `
+    <section class="card">
+      <div class="card-head"><h2>Look up a domain</h2></div>
+      ${lookupForm("lk-form", domain)}
+      <p class="small muted" style="margin:8px 0 0">Shows every allow or block rule, regex and adlist entry on each Pi-hole that matches the domain (adlist entries like <span class="mono">||example.com^</span> cover its subdomains too), which one wins, and the domain's recent queries.</p>
+    </section>
+    <div id="lk-result">${domain ? `<section class="card"><p class="empty">Looking up ${esc(domain)}…</p></section>` : ""}</div>`;
+  lookupSubmit($("#lk-form"));
+  if (!domain) { $("#lk-form-q").focus(); return; }
+  const show = (r, notes = []) => {
+    $("#lk-result").innerHTML = `
+      ${notes.map((n) => `<div class="banner warn">${esc(n)}</div>`).join("")}
+      ${lookupSummary(r)}
+      ${lookupActions(r)}
+      <div class="grid cols-2">${r.piholes.map(lookupCard).join("")}</div>
+      <section class="card"><div class="card-head"><h2>Recent queries</h2>
+        <div class="right"><a href="#queries">Query log →</a></div></div>${recentTable(r.recent, r.domain)}</section>`;
+  };
+  let result;
+  try {
+    result = await api(`/api/lookup?domain=${encodeURIComponent(domain)}`);
+  } catch (e) {
+    if (here()) $("#lk-result").innerHTML = `<div class="banner bad">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!here()) return;
+  show(result);
+  $("#lk-result").onclick = async (e) => {
+    const b = e.target.closest("[data-lact]");
+    if (!b) return;
+    $$("[data-lact]").forEach((x) => (x.disabled = true));
+    b.textContent = b.dataset.lact === "allow" ? "Allowing…" : "Blocking…";
+    try {
+      const r = await api("/api/lookup", { body: { domain: result.domain, action: b.dataset.lact } });
+      const failed = r.changes.flatMap((c) => c.results.filter((x) => !x.ok).map((x) => `${x.name}: ${x.error}`));
+      if (failed.length) toast(failed.join(" · "), true);
+      else if (!r.changes.length) toast("Nothing needed changing");
+      else {
+        const done = r.changes.map((c) => `${c.action === "delete" ? "removed" : "added"} ${c.label}`).join(", then ");
+        toast(`${done[0].toUpperCase()}${done.slice(1)} on both Pi-holes`);
+      }
+      if (!here()) return;
+      result = r.lookup;
+      show(result, r.notes);
+    } catch (err) {
+      toast(err.message, true);
+      if (here()) show(result);
+    }
+  };
 }
 
 // ---------- devices ------------------------------------------------------------------
@@ -975,17 +1149,45 @@ function autoNote(auto) {
   return `<p class="small muted">Auto-sync is on: changes are applied after each background check, except ones that would delete more than ${auto.max_deletes} items, remove an adlist, or copy an empty ${esc(state.status.piholes[0].name)}. Those wait for you.</p>`;
 }
 
+function settingValue(v) {
+  if (v == null) return `<span class="muted">not set</span>`;
+  if (typeof v === "boolean") return v ? "on" : "off";
+  if (Array.isArray(v)) return v.length ? v.map((x) => `<div class="mono">${esc(x)}</div>`).join("") : `<span class="muted">none</span>`;
+  if (v === "") return `<span class="muted">empty</span>`;
+  return esc(typeof v === "object" ? JSON.stringify(v) : v);
+}
+
+function settingsCard(st, m, sec) {
+  const rows = st.rows || [];
+  const differ = rows.filter((r) => !r.same);
+  const table = (list) => `<div class="table-wrap"><table class="settings"><thead><tr><th>Setting</th><th>${esc(m.name)}</th><th>${esc(sec.name)}</th></tr></thead><tbody>
+    ${list.map((r) => `<tr class="${r.same ? "" : "differs"}"><td>${esc(r.label)}<div class="muted small mono">${esc(r.path)}</div></td><td>${settingValue(r.main)}</td><td>${settingValue(r.secondary)}</td></tr>`).join("")}
+  </tbody></table></div>`;
+  return `<section class="card" id="settings-card">
+    <div class="card-head"><h2>Settings</h2><span class="muted small">${st.checked ? `checked ${fmt.ago(st.checked)}` : "not checked yet"}</span></div>
+    <p class="small muted" style="margin-top:-4px">Sync doesn't copy Pi-hole's settings, so twinhole compares the ones that should match (upstream servers, DNSSEC, conditional forwarding, cache, blocking mode and more) and alerts when they've differed for over an hour. It never changes them: fix a difference in that Pi-hole's own Settings page. To leave a setting out, add its name to <span class="mono">SETTINGS_IGNORE</span> in .env.</p>
+    ${st.error ? `<div class="banner bad">Couldn't compare settings: ${esc(st.error)}</div>` : ""}
+    ${!rows.length ? (st.error ? "" : `<p class="empty">Not compared yet.</p>`)
+      : differ.length ? `<p><b>${differ.length} of ${rows.length} settings differ</b></p>${table(differ)}`
+      : `<p class="empty"><span class="dot ok"></span> All ${rows.length} compared settings match.</p>`}
+    ${rows.length ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">Every compared setting</summary>${table(rows)}</details>` : ""}
+  </section>`;
+}
+
 async function sync(el) {
   const here = alive();
   const s = state.status;
   const [m, sec] = s.piholes;
   el.innerHTML = `<section class="card"><p class="empty">Comparing ${esc(m.name)} and ${esc(sec.name)}…</p></section>`;
-  let preview;
+  let preview, settings;
+  const checkSettings = () => api("/api/settings/check", { body: {} }).catch((e) => ({ checked: null, rows: [], error: e.message }));
+  const settingsCheck = checkSettings();
   try {
     preview = await api("/api/sync/preview", { body: {} });
   } catch (e) {
     preview = { ...(await api("/api/sync")), error: e.message };
   }
+  settings = await settingsCheck;
   refreshStatus();
   let result = null;
   const draw = () => {
@@ -1020,11 +1222,14 @@ async function sync(el) {
               <td style="width:130px">${esc(NOUN[c.resource])}</td>
               <td class="break">${esc(c.label)}${changeDiff(c)}</td></tr>`).join("")}
             </tbody></table></div>`}
-      </section>`;
+      </section>
+      ${settingsCard(settings, m, sec)}`;
     $("#check").onclick = async () => {
       $("#check").disabled = true;
       $("#check").textContent = "Checking…";
+      const fresh = checkSettings();
       try { preview = await api("/api/sync/preview", { body: {} }); result = null; } catch (e) { toast(e.message, true); }
+      settings = await fresh;
       await refreshStatus();
       draw();
     };
@@ -1046,10 +1251,13 @@ async function sync(el) {
   };
   draw();
   live(async () => {
-    if (result || state.status.sync.checked === preview.checked) return;
-    const fresh = await api("/api/sync");
+    const st = state.status.settings;
+    const settingsNew = st && st.checked !== settings.checked;
+    if (result || (state.status.sync.checked === preview.checked && !settingsNew)) return;
+    const [fresh, freshSettings] = await Promise.all([api("/api/sync"), settingsNew ? api("/api/settings") : settings]);
     if (!here() || result) return;
     preview = fresh;
+    settings = freshSettings;
     draw();
   });
 }
