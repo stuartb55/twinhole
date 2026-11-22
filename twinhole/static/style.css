@@ -219,6 +219,7 @@ td.actions { white-space: nowrap; text-align: right; }
 .lookup-bar input, .lookup-form input { flex: 1 1 240px; }
 .lookup-form { align-items: center; }
 .lookup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 14px; }
+#lk-result:not(:empty) { margin-top: 14px; }
 .verdict-groups { margin: 8px 0; padding-left: 18px; }
 ol.rules { list-style: none; margin: 0; padding: 0; }
 ol.rules li { padding: 8px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
