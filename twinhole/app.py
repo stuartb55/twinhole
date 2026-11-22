@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, devices, dnsprobe, releases
+from . import config, devices, dnsprobe, lookup, releases
 from .guard import GuardMiddleware
 from .alerts import URGENT, AlertManager, NoNotifier, Notifier, Ntfy
 from .heartbeat import Heartbeat
@@ -25,6 +25,7 @@ from .history import History
 from .monitor import LatestRelease, Monitor, Probe, VersionQuery
 from .pihole import Pihole, PiholeError
 from .services import Editor, GravityRunner, PlanChanged, SyncService
+from .settings_check import SettingsCheck
 from .store import DAY, Store
 from .sync import RESOURCES, Change, describe, snapshot
 
@@ -78,6 +79,7 @@ class Twinhole:
         self.gravity = GravityRunner(self.store)
         self.sync = SyncService(settings, self.main, self.secondary, self.store, self.alerts, self.gravity)
         self.editor = Editor(self.main, self.secondary, self.store)
+        self.settings_check = SettingsCheck(settings, self.main, self.secondary, self.alerts, clock)
         self._tasks: list[asyncio.Task] = []
         self._oneoffs: set[asyncio.Task] = set()
 
@@ -101,6 +103,7 @@ class Twinhole:
             asyncio.create_task(_every(s.check_interval, self.monitor.run_cycle, "monitor")),
             asyncio.create_task(_every(s.history_interval, self.history.run, "history")),
             asyncio.create_task(_every(s.drift_interval, self.sync.check_drift, "drift", delay=15)),
+            asyncio.create_task(_every(s.drift_interval, self.settings_check.run, "settings", delay=20)),
         ]
 
     async def stop(self) -> None:
@@ -162,6 +165,11 @@ class BlockingBody(BaseModel):
 
 class GravityBody(BaseModel):
     target: str = "both"
+
+
+class LookupBody(BaseModel):
+    domain: str = Field(max_length=300)
+    action: Literal["allow", "block"]
 
 
 def _validate_edit(body: EditBody) -> Change:
@@ -255,6 +263,7 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
             "piholes": [t.monitor.status[p.id] | {"reliability": reliability(t, p)} for p in t.piholes],
             "alerts": sorted(t.alerts.active.values(), key=lambda a: a["since"]),
             "sync": {k: last[k] for k in ("checked", "summary", "error", "auto")} | {"count": len(last["changes"])},
+            "settings": {k: t.settings_check.last[k] for k in ("checked", "error", "differences")},
             "gravity": t.gravity.status(),
             "check_interval": settings.check_interval,
             "unsent_alerts": len(t.alerts.outbox),
@@ -383,6 +392,54 @@ def create_app(settings: config.Settings | None = None, *, background: bool = Tr
             raise HTTPException(409, str(e)) from e
         except PiholeError as e:
             raise HTTPException(502, e.message) from e
+
+    @app.get("/api/settings")
+    async def settings_state() -> dict[str, Any]:
+        return th().settings_check.last
+
+    @app.post("/api/settings/check")
+    async def settings_now() -> dict[str, Any]:
+        return await th().settings_check.run()
+
+    async def _lookup(t: Twinhole, domain: str) -> dict[str, Any]:
+        views = await asyncio.gather(*(lookup.look_up(p, domain) for p in t.piholes))
+        statuses = {v["verdict"]["status"] for v in views if v["verdict"]}
+        recent = sorted((q for v in views for q in v.pop("recent")), key=lambda q: q["time"] or 0, reverse=True)
+        return {
+            "domain": domain,
+            "piholes": views,
+            "agree": len(statuses) <= 1,
+            "recent": recent[: lookup.RECENT],
+        }
+
+    def _domain(raw: str) -> str:
+        try:
+            return lookup.normalise(raw)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/lookup")
+    async def lookup_view(domain: str = Query(max_length=300)) -> dict[str, Any]:
+        return await _lookup(th(), _domain(domain))
+
+    @app.post("/api/lookup")
+    async def lookup_edit(body: LookupBody) -> dict[str, Any]:
+        require_writes()
+        t = th()
+        domain = _domain(body.domain)
+        main_view = await lookup.look_up(t.main, domain)
+        if main_view["error"]:
+            raise HTTPException(502, f"{t.main.name}: {main_view['error']}")
+        changes, notes = lookup.plan_edits(domain, body.action, main_view["rules"])
+        results = []
+        for change in changes:
+            done = await t.editor.edit(change)
+            results.append({"label": change.label, "action": change.action, "results": done})
+            if not all(r["ok"] for r in done):
+                break
+        if changes:
+            t.spawn(t.sync.check_drift())
+        return {"changes": results, "notes": notes, "lookup": await _lookup(t, domain)}
 
     @app.get("/api/manage")
     async def manage_view() -> dict[str, Any]:

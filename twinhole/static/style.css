@@ -213,6 +213,20 @@ td.actions { white-space: nowrap; text-align: right; }
 .switch input:checked + span::after { transform: translateX(14px); }
 .switch input:disabled + span { cursor: not-allowed; opacity: .5; }
 
+/* Lookup */
+.lookup-bar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 10px 16px; margin-bottom: 14px; }
+.lookup-bar label { font-weight: 600; }
+.lookup-bar input, .lookup-form input { flex: 1 1 240px; }
+.lookup-form { align-items: center; }
+.lookup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 14px; }
+.verdict-groups { margin: 8px 0; padding-left: 18px; }
+ol.rules { list-style: none; margin: 0; padding: 0; }
+ol.rules li { padding: 8px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+ol.rules li:last-child { border-bottom: 0; }
+ol.rules li.inactive { opacity: .55; }
+table.settings tr.differs td { background: var(--warn-bg); }
+table.settings td:first-child { width: 45%; }
+
 /* ---------- phones ---------- */
 @media (max-width: 600px) {
   header { padding: 8px 12px; gap: 4px 12px; }

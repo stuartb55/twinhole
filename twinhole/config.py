@@ -51,6 +51,7 @@ class Settings:
     allowed_hosts: tuple[str, ...] = ()
     heartbeat_url: str = ""
     heartbeat_interval: int = 60
+    settings_ignore: tuple[str, ...] = ()
 
     @property
     def piholes(self) -> tuple[PiholeConfig, PiholeConfig]:
@@ -134,4 +135,5 @@ def load(env: Mapping[str, str] = os.environ) -> Settings:
         ),
         heartbeat_url=env.get("HEARTBEAT_URL", "").strip(),
         heartbeat_interval=_int(env, "HEARTBEAT_INTERVAL", 60),
+        settings_ignore=tuple(p.strip() for p in env.get("SETTINGS_IGNORE", "").split(",") if p.strip()),
     )

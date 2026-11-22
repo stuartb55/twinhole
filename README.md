@@ -26,6 +26,13 @@ Pi-hole v6 instances, in a single container with a web dashboard.
   change goes to the main Pi-hole first, then the secondary.
 - **Actions:** pause or enable blocking (one or both Pi-holes) and run gravity, with
   live output.
+- **Lookup:** type a domain (or paste a web address) to see why it's blocked or not on
+  each Pi-hole: every matching allow or block rule, regex and adlist entry, which one
+  wins for each group, and the domain's recent queries. Allow or Block fixes it on both.
+  The Overview has a lookup box, and domains in the query log and top lists link to it.
+- **Settings check:** every 15 minutes twinhole compares the Pi-hole settings that should
+  match, such as upstream servers, DNSSEC, conditional forwarding, cache size and blocking
+  mode, and shows any difference on the Sync page. It never changes settings.
 
 ## Alerts
 
@@ -39,6 +46,7 @@ Pi-hole v6 instances, in a single container with a web dashboard.
 | Gravity older than 8 days | default (3) |
 | A Pi-hole core, web or FTL update is available | low (2) |
 | Secondary out of sync with main for more than 1 h | default (3) |
+| The two Pi-holes' settings differ for more than 1 h | default (3) |
 | Auto-sync held changes back for you to review | default (3) |
 | Any of the above recovering | low (2) |
 
@@ -147,6 +155,7 @@ required.
 | `ALLOW_WRITES` | `false` | See [read-only mode](#read-only-mode) |
 | `AUTO_SYNC` | `false` | See [auto-sync](#auto-sync) |
 | `ALLOWED_HOSTS` | (none) | Extra names twinhole answers to, comma-separated; see [host names](#host-names) |
+| `SETTINGS_IGNORE` | (none) | Settings the [settings check](#settings-check) leaves out, comma-separated, e.g. `dns.cache.size` |
 | `HEARTBEAT_URL` | (none) | Address to call after each round of checks, so an outside monitor notices if twinhole stops; see [heartbeat](#heartbeat) |
 | `TZ` | `Europe/London` | Time zone for daily history and charts |
 
@@ -168,6 +177,20 @@ won't when that looks risky. If a change would delete more than
 `AUTO_SYNC_MAX_DELETES` items (default 5), remove an adlist, or copy a main Pi-hole
 that looks empty, it leaves everything as it is, sends an alert, and waits for you to
 review it on the Sync page. If either Pi-hole can't be read, it does nothing.
+
+### Settings check
+
+Sync copies lists and records, not Pi-hole's settings, so twinhole compares the settings
+that should be the same on both: upstream DNS servers (in any order), DNSSEC, conditional
+forwarding, the local domain, listening mode, cache, blocking mode and TTL, rate limit,
+query logging, privacy level, custom dnsmasq lines and a few more. The full list, with
+each setting's name, is on the Sync page. Settings tied to one machine, such as its network
+interface, ports, block reply addresses, DHCP and the web server, aren't compared.
+
+If a difference lasts longer than `DRIFT_GRACE_MIN` (an hour by default), you get an alert.
+To fix it, change the setting in that Pi-hole's own Settings page. If a difference is on
+purpose, leave that setting out with `SETTINGS_IGNORE`, using the names shown on the Sync
+page (for example `SETTINGS_IGNORE=dns.cache.size,misc.privacylevel`).
 
 ### Host names
 
@@ -275,6 +298,8 @@ publishes `latest`; pushing a `v*` tag publishes a versioned image
 | `twinhole/alerts.py` | Alert state machine and ntfy |
 | `twinhole/history.py` | History import, backfill, daily top lists |
 | `twinhole/sync.py` | Snapshot, diff and apply |
+| `twinhole/lookup.py` | Why a domain is blocked: matching rules and Pi-hole's order |
+| `twinhole/settings_check.py` | Settings comparison between the two Pi-holes |
 | `twinhole/services.py` | Sync orchestration, write-through edits, gravity runs |
 | `twinhole/app.py` | Web API and background loops |
 | `twinhole/static/` | The dashboard (plain HTML/JS, Chart.js) |

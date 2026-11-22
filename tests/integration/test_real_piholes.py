@@ -13,13 +13,14 @@ import time
 
 import pytest
 
-from twinhole import config, dnsprobe
+from twinhole import config, dnsprobe, lookup
 from twinhole.alerts import AlertManager
 from twinhole.history import History
 from twinhole.monitor import Monitor
 from twinhole.pihole import Pihole, PiholeError
 from twinhole.services import Editor, GravityRunner
 from twinhole.store import Store
+from twinhole.settings_check import compare
 from twinhole.sync import Change, apply, plan, snapshot, summarize
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -193,3 +194,39 @@ async def test_gravity_streams_output(piholes, tmp_path):
     run = runner.status()[sec.id]
     assert run["ok"] is True, run
     assert any("gravity" in line.lower() or "list" in line.lower() for line in run["log"])
+
+
+async def test_lookup_reads_rules_in_pihole_order(piholes):
+    main = piholes[0]
+    await main.add_domain("deny", "exact", "ads.example.com", None, [0], True)
+    await main.add_domain("deny", "regex", r"(\.|^)example\.com$", None, [0], True)
+    await main.add_domain("allow", "regex", r"^ads\.", None, [0], True)
+    await asyncio.sleep(3)  # FTL compiles new regexes a moment after the change
+    view = await lookup.look_up(main, "ads.example.com")
+    assert view["error"] is None
+    assert [(r["source"], r["action"]) for r in view["rules"]] == [
+        ("regex", "allow"), ("exact", "block"), ("regex", "block"),
+    ]
+    assert view["verdict"]["status"] == "allowed"
+    other = await lookup.look_up(main, "www.example.com")
+    assert other["verdict"]["status"] == "blocked"
+    assert (await lookup.look_up(main, "example.org"))["verdict"]["status"] == "not_blocked"
+
+
+async def test_settings_compare_on_real_config(piholes):
+    a, b = await asyncio.gather(*(p.config() for p in piholes))
+    rows = compare(a, b)
+    paths = {r["path"] for r in rows}
+    assert {"dns.upstreams", "dns.dnssec", "dns.blocking.mode", "misc.privacylevel"} <= paths
+    assert all(r["same"] for r in rows), [r for r in rows if not r["same"]]
+
+    sec = piholes[1]
+    size = b["dns"]["cache"]["size"]
+    await sec._request("PATCH", "/config", json={"config": {"dns": {"cache": {"size": size + 1000}}}})
+    try:
+        await asyncio.sleep(2)  # a cache size change restarts FTL
+        differ = [r for r in compare(a, await sec.config()) if not r["same"]]
+        assert [(r["path"], r["main"], r["secondary"]) for r in differ] == [("dns.cache.size", size, size + 1000)]
+    finally:
+        await sec._request("PATCH", "/config", json={"config": {"dns": {"cache": {"size": size}}}})
+        await sec._settle()

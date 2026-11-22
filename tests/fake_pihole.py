@@ -5,7 +5,9 @@ It mirrors the behaviour checked against real Pi-hole containers in tests/integr
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 import time
 from typing import Any
 from urllib.parse import unquote
@@ -16,6 +18,23 @@ import httpx
 def _err(status: int, key: str, message: str, hint: str | None = None) -> httpx.Response:
     return httpx.Response(status, json={"error": {"key": key, "message": message, "hint": hint}, "took": 0})
 
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "dns": {
+        "upstreams": ["127.0.0.1#5335"], "dnssec": False, "revServers": [], "domainNeeded": False,
+        "expandHosts": False, "bogusPriv": True, "domain": {"name": "lan", "local": True},
+        "listeningMode": "LOCAL", "queryLogging": True, "port": 53, "interface": "eth0",
+        "cache": {"size": 10000, "optimizer": 3600, "upstreamBlockedTTL": 86400, "rrtype": "ANY"},
+        "blocking": {"active": True, "mode": "NULL", "edns": "TEXT"}, "blockTTL": 2,
+        "rateLimit": {"count": 1000, "interval": 60}, "CNAMEdeepInspect": True, "blockESNI": True,
+        "EDNS0ECS": True, "ignoreLocalhost": False,
+        "specialDomains": {"mozillaCanary": True, "iCloudPrivateRelay": True, "designatedResolver": True},
+        "replyWhenBusy": "ALLOW", "piholePTR": "PI.HOLE", "hosts": [], "cnameRecords": [],
+    },
+    "misc": {"privacylevel": 0, "etc_dnsmasq_d": False, "dnsmasq_lines": []},
+    "database": {"maxDBdays": 91},
+    "webserver": {"port": "80o,443os"},
+}
 
 DUPLICATE = ("database_error", "Could not add to gravity database", "The item is already present")
 
@@ -48,6 +67,9 @@ class FakePihole:
             {"ip": "127.0.0.1", "name": "localhost", "port": 5335, "count": 350,
              "statistics": {"response": 0.0254856, "variance": 0.02}},
         ]
+        # What each adlist holds after gravity, by (type, address): plain domains or ||abp^ entries.
+        self.gravity: dict[tuple[str, str], list[str]] = {}
+        self.config: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
         self.calls: list[tuple[str, str]] = []
         self.restarts = 0  # FTL restarts caused by local DNS / CNAME changes
 
@@ -136,6 +158,8 @@ class FakePihole:
             log = self.query_log
             if "client_ip" in params:
                 log = [q for q in log if (q.get("client") or {}).get("ip") == params["client_ip"]]
+            if "domain" in params:
+                log = [q for q in log if q.get("domain") == params["domain"]]
             return httpx.Response(200, json={"queries": log[: int(params.get("length", 100))]})
         if head == "groups":
             return self._groups(method, parts, body)
@@ -145,6 +169,12 @@ class FakePihole:
             return self._lists(method, parts, body, params.get("type"))
         if head == "clients":
             return self._clients(method, parts, body)
+        if head == "search":
+            return httpx.Response(200, json={"search": self._search(parts[1].lower())})
+        if head == "config" and len(parts) == 1 and method == "GET":
+            cfg = copy.deepcopy(self.config)
+            cfg["dns"]["hosts"], cfg["dns"]["cnameRecords"] = list(self.hosts), list(self.cnames)
+            return httpx.Response(200, json={"config": cfg})
         if head == "config" and len(parts) == 1 and method == "PATCH":
             dns = body["config"]["dns"]
             self.hosts[:] = [" ".join(h.split()) for h in dns.get("hosts", self.hosts)]
@@ -159,6 +189,21 @@ class FakePihole:
             self.gravity_last_update = int(time.time())
             return httpx.Response(200, text="  [i] Neutrino emissions detected...\n  [✓] Done.\n")
         return httpx.Response(404, json={"error": {"key": "not_found", "message": "Not found", "hint": raw}})
+
+    def _search(self, domain: str) -> dict[str, Any]:
+        """Like FTL: exact entries for the domain, regexes that match it, and adlist entries
+        for the domain or, as ||abp^ entries, any of its parent domains."""
+        found = [d for (_, kind, entry), d in self.domains.items()
+                 if (kind == "exact" and entry == domain) or (kind == "regex" and re.search(entry, domain))]
+        parents = [".".join(domain.split(".")[i:]) for i in range(domain.count(".") + 1)]
+        wanted = {domain} | {f"||{p}^" for p in parents}
+        gravity = []
+        for key, entries in self.gravity.items():
+            lst = self.lists.get(key)
+            for entry in entries:
+                if lst and entry in wanted:
+                    gravity.append({**lst, "domain": entry})
+        return {"domains": found, "gravity": gravity, "results": {}, "parameters": {"domain": domain}}
 
     def _groups(self, method, parts, body) -> httpx.Response:
         if method == "GET":
